@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* 系统① 暖色调主题(Anna 2026-05-24 拍定:暖色 + 一连串列表 + 大白话) */
+@theme {
+  --color-cream: #fbf3e8;       /* 暖奶油底 */
+  --color-panel: #fffaf2;       /* 暖白面板 */
+  --color-line: #ecdcc6;        /* 暖分隔线 */
+  --color-ink: #3d2f24;         /* 暖深棕字 */
+  --color-mut: #a08a72;         /* 暖灰棕 次要字 */
+  --color-terra: #c2562a;       /* 陶土橙 主色 */
+  --color-terrasoft: #fbeee0;   /* 主色浅底 */
+  --color-strong: #c0392b;      /* 强迁移 */
+  --color-mid: #cf8a2e;         /* 中迁移 */
+  --color-weak: #8a7a68;        /* 弱迁移 */
+  --font-sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+body {
+  background: var(--color-cream);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}

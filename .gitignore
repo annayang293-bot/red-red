@@ -1,0 +1,27 @@
+# 密钥 —— 绝不入库
+.env
+.env.*
+!.env.example
+web/.env*
+!web/.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+experiments/*/.venv/
+
+# Node / Next.js
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# 系统
+.DS_Store
+*.log
+
+# 生成产物
+preview/preview.html
+experiments/**/firecrawl_out.md
