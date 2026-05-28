@@ -1,15 +1,18 @@
 -- ============================================================
--- migration 0004 — 删主题级联(Anna 2026-05-26:删主题就把它的所有历史一起带走)
+-- migration 0004 — cascade topic delete (Anna 2026-05-26: deleting a topic should take all its history along)
 -- ============================================================
--- 业务语义:点 × 删主题 = 该主题彻底从系统消失。包括:
---   - 它名下所有 runs(运行记录)
---   - 这些 runs 的 report_top20(报告行)
---   - 这些 runs **首次**入库的 posts(若其它主题的 runs 还引用着这条 post 就不删,转移 run_id)
---   - 被删的 posts 上挂的 starred(收藏);其它 starred 的 run_id 指向被删 run 的 → 置 NULL(本来就 nullable)
--- 用单事务 plpgsql 函数,任一步失败整体回滚,不留破碎状态。
+-- Business semantics: clicking × to delete a topic = it disappears completely from the system. Including:
+--   - all runs under that topic (run records)
+--   - those runs' report_top20 rows (report rows)
+--   - posts those runs **first-inserted** into the archive (if other topics' runs still reference the post,
+--     don't delete — reassign the run_id instead)
+--   - starred entries attached to the deleted posts; other starred whose run_id points at deleted runs → set NULL
+--     (the column is already nullable)
+-- Wrapped as a single plpgsql function; any step's failure rolls everything back, never leaving a broken state.
 --
--- 注:posts_archive 是 append-only 共享主表(同一帖跨主题报告共用一行,首次 run_id=首次入库的 run)
--- 所以"删主题"对 posts 的处理是**条件性的**——只孤立、且只被这条主题引用的才真删。
+-- Note: posts_archive is an append-only shared main table (the same post is shared across reports from different
+-- topics; first-seen run_id = the run that first inserted the post). So "delete topic" treats posts conditionally —
+-- only orphan posts (referenced only by this topic) are truly deleted.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION delete_topic_cascade(p_topic_id BIGINT)
 RETURNS JSONB
@@ -25,7 +28,7 @@ DECLARE
   v_topic_keyword    TEXT;
   v_topic_status     TEXT;
 BEGIN
-  -- 找主题
+  -- Find the topic
   SELECT keyword, status INTO v_topic_keyword, v_topic_status
     FROM topics WHERE topic_id = p_topic_id;
   IF v_topic_keyword IS NULL THEN
@@ -35,17 +38,18 @@ BEGIN
     RAISE EXCEPTION 'cannot_delete_active_topic';
   END IF;
 
-  -- 收集这个 topic 名下的 runs
+  -- Collect runs belonging to this topic
   SELECT COALESCE(ARRAY_AGG(run_id), ARRAY[]::BIGINT[])
     INTO v_run_ids FROM runs WHERE topic_id = p_topic_id;
 
   IF cardinality(v_run_ids) > 0 THEN
-    -- 1) 删 report_top20(这些 runs 的报告行)
+    -- 1) Delete report_top20 (these runs' report rows)
     WITH d AS (DELETE FROM report_top20 WHERE run_id = ANY(v_run_ids) RETURNING 1)
     SELECT COUNT(*) INTO v_reports_deleted FROM d;
 
-    -- 2) 哪些 post 还能"被救"?其它 run(不在 v_run_ids 里)的 report_top20 还引用着 → 转移 run_id
-    --    (注:run_id 是 NOT NULL FK,不能 NULL,必须指向一个真存在的 run)
+    -- 2) Which posts can be "rescued"? Posts referenced by another run's report_top20 (run not in v_run_ids)
+    --    → reassign run_id to the surviving reference.
+    --    (Note: run_id is a NOT NULL FK; it can't be NULL — it must point to an existing run.)
     WITH save AS (
       UPDATE posts_archive p
       SET run_id = (
@@ -61,7 +65,7 @@ BEGIN
     )
     SELECT COUNT(*) INTO v_posts_reassigned FROM save;
 
-    -- 3) 剩下的 post(只被本主题引用)→ 先删它们的 starred,再删 post
+    -- 3) Remaining posts (only referenced by this topic) → delete their starred entries first, then the posts
     WITH ds AS (
       DELETE FROM starred WHERE post_id IN (
         SELECT post_id FROM posts_archive WHERE run_id = ANY(v_run_ids)
@@ -71,15 +75,15 @@ BEGIN
     WITH dp AS (DELETE FROM posts_archive WHERE run_id = ANY(v_run_ids) RETURNING 1)
     SELECT COUNT(*) INTO v_posts_deleted FROM dp;
 
-    -- 4) starred.run_id 是可空 FK:指向被删 run 的 → 置 NULL(保留收藏记录本身)
+    -- 4) starred.run_id is a nullable FK: those pointing at deleted runs → set NULL (preserve the star record itself)
     UPDATE starred SET run_id = NULL WHERE run_id = ANY(v_run_ids);
 
-    -- 5) 删 runs
+    -- 5) Delete the runs
     WITH dr AS (DELETE FROM runs WHERE run_id = ANY(v_run_ids) RETURNING 1)
     SELECT COUNT(*) INTO v_runs_deleted FROM dr;
   END IF;
 
-  -- 6) 最后删 topic 本身
+  -- 6) Finally delete the topic itself
   DELETE FROM topics WHERE topic_id = p_topic_id;
 
   RETURN jsonb_build_object(
@@ -95,5 +99,5 @@ END;
 $$;
 
 -- ============================================================
--- 完成. 前端 DELETE /api/topics 改调 rpc('delete_topic_cascade').
+-- Done. The frontend's DELETE /api/topics now calls rpc('delete_topic_cascade').
 -- ============================================================

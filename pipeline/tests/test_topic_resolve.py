@@ -1,7 +1,7 @@
-"""Step 3 落地 topic_resolve 离线决策边界测试(Rex 🟡2)。
+"""Step 3 landing layer (topic_resolve) offline decision-boundary tests (Rex 🟡2).
 
-monkeypatch `_llm_subreddits` / `_openai_json` / `_verify_subreddit` 避免真网络。
-跑法: python3 system1-app/pipeline/tests/test_topic_resolve.py
+monkeypatch `_llm_subreddits` / `_openai_json` / `_verify_subreddit` to avoid real network calls.
+Run: python3 system1-app/pipeline/tests/test_topic_resolve.py
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _restore_key(saved):
 
 
 def test_no_openai_key_both_fallback():
-    """🐞 无 OPENAI_API_KEY → 版块 + 关键词都回退默认,两个 source 都是 fallback。"""
+    """🐞 No OPENAI_API_KEY → both subreddits + keywords fall back to defaults, both sources = fallback."""
     saved = _pop_key()
     try:
         r = tr.resolve_topic("anything", ["FB_S1", "FB_S2"], ["fb_k1", "fb_k2"])
@@ -39,18 +39,19 @@ def test_no_openai_key_both_fallback():
 
 
 def test_llm_subs_ok_keywords_fallback_still_llm_subs():
-    """🐞 回归(Rex 🔴):LLM 版块成功 + 关键词调用失败 →
-    subreddits_source 仍是 llm(松闸不被关键词回退绑架);keywords_source = fallback。"""
+    """🐞 Regression (Rex 🔴): LLM subreddits succeed + keyword call fails →
+    subreddits_source must still be llm (gate relaxation not held hostage by keyword fallback);
+    keywords_source = fallback."""
     saved = _pop_key()
     os.environ["OPENAI_API_KEY"] = "dummy"
     orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
     tr._llm_subreddits = lambda kw: ["realsub1", "realsub2"]
-    tr._openai_json = lambda prompt: None       # 关键词那次 LLM 调用失败
-    tr._verify_subreddit = lambda name: True    # 假设版块都真实存在
+    tr._openai_json = lambda prompt: None       # The keywords LLM call fails
+    tr._verify_subreddit = lambda name: True    # Assume all subreddits really exist
     try:
         r = tr.resolve_topic("X", ["FB_S"], ["fb_k"])
         assert r["subreddits"] == ["realsub1", "realsub2"]
-        assert r["subreddits_source"] == "llm", "版块来自 LLM 必须标 llm,跟关键词解耦"
+        assert r["subreddits_source"] == "llm", "LLM-derived subreddits must be tagged llm, decoupled from keywords"
         assert r["keywords"] == ["fb_k"]
         assert r["keywords_source"] == "fallback"
     finally:
@@ -60,19 +61,20 @@ def test_llm_subs_ok_keywords_fallback_still_llm_subs():
 
 
 def test_partial_404_keeps_verified_no_fallback():
-    """🐞 部分版块 404(LLM 幻觉)→ 剔除幻觉、保留真实;partial(< target_count)也不回退默认。"""
+    """🐞 Partial 404 (LLM hallucinations) → drop the hallucinations, keep the real ones;
+    even partial (< target_count) does NOT fall back to defaults."""
     saved = _pop_key()
     os.environ["OPENAI_API_KEY"] = "dummy"
     orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
-    tr._llm_subreddits = lambda kw: ["a", "fake1", "b", "fake2", "c", "d"]   # 4 真 + 2 假
+    tr._llm_subreddits = lambda kw: ["a", "fake1", "b", "fake2", "c", "d"]   # 4 real + 2 fake
     tr._openai_json = lambda prompt: {"keywords": ["kw1", "kw2"]}
     fake_404 = {"fake1", "fake2"}
     tr._verify_subreddit = lambda n: n not in fake_404
     try:
         r = tr.resolve_topic("X", ["FB_S"], ["fb_k"])
         assert set(r["subreddits"]) == {"a", "b", "c", "d"}, r["subreddits"]
-        assert len(r["subreddits"]) < 6, "partial<target 时不应凑满"
-        assert r["subreddits_source"] == "llm", "partial 仍算 LLM 来源(只要有 verified 就不回退)"
+        assert len(r["subreddits"]) < 6, "partial<target should not be padded up"
+        assert r["subreddits_source"] == "llm", "partial still counts as LLM source (as long as something verified, no fallback)"
         assert r["keywords"] == ["kw1", "kw2"]
         assert r["keywords_source"] == "llm"
     finally:

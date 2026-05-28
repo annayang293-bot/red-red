@@ -1,8 +1,9 @@
-"""把当天的 daily_report.md 渲染成可点击的 UI 预览(单文件 HTML)。
+"""Render the day's daily_report.md into a clickable UI preview (single-file HTML).
 
-v2 (Anna 反馈): 不要每条一个大卡片框,改成「一个迁移档下面一连串列表」、暖色调、每条更轻。
+v2 (per Anna's feedback): no per-item card frames; switch to "one tier header → list of rows underneath",
+warm palette, each row lighter.
 
-跑法: python3 build_preview.py  → 生成 preview.html,浏览器打开即可。
+Run: python3 build_preview.py → produces preview.html, open it in a browser.
 """
 from __future__ import annotations
 import hashlib
@@ -52,8 +53,9 @@ def parse(path):
                 cur.update(source=m.group(1), english=m.group(2),
                            likes=m.group(3) or "", comments=m.group(4) or "",
                            url=url,
-                           # 稳定身份(收藏/React key 用):由原帖 URL 派生,不随排序/日期变。
-                           # 真接 DB 后换成 posts_archive.post_id。
+                           # Stable identity (used for star / React key): derived from the original
+                           # URL, doesn't change with sort order / date. Once wired to the real DB,
+                           # this is replaced by posts_archive.post_id.
                            id="p" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:11])
                 continue
             m = COMMENT.match(line)
@@ -66,7 +68,7 @@ TIER_CLASS = {"🔥": "strong", "🟡": "mid", "⚪": "weak"}
 
 
 def rows_by_tier(items):
-    """按档分组,每档一个 header + 下面一连串行。"""
+    """Group by tier; each tier renders one header + a list of rows beneath it."""
     out, seen = [], []
     for it in items:
         key = (it["tier_emoji"], it["tier_name"], it["tier_desc"])
@@ -116,6 +118,7 @@ TEMPLATE = r"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
  --accent-soft:#fbeee0;
  --strong:#c0392b; --mid:#cf8a2e; --weak:#8a7a68;
 }
+/* The HTML body below renders Chinese UI on purpose — this is the preview's user-facing copy. */
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,"PingFang SC",sans-serif;background:var(--bg);color:var(--ink)}
 .app{display:flex;min-height:100vh}
@@ -135,7 +138,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC",sans-serif;background:var(
 .hint{color:var(--mut);font-size:12px;margin:6px 2px 14px}
 .note{background:#fdeede;border:1px solid #f3cfa3;color:#8a4b1d;font-size:12px;padding:8px 12px;border-radius:9px;margin-bottom:18px}
 
-/* 一个档 = 一个 header + 下面一连串(无每条框) */
+/* One tier = one header + a chain of rows beneath (no per-item frame) */
 .tierhdr{display:flex;align-items:baseline;gap:8px;margin:24px 0 4px;padding-bottom:6px;border-bottom:2px solid var(--line);font-size:16px}
 .tierhdr .te{font-size:17px}
 .tierhdr.strong b{color:var(--strong)} .tierhdr.mid b{color:var(--mid)} .tierhdr.weak b{color:var(--weak)}

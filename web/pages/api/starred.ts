@@ -1,4 +1,4 @@
-/** GET /api/starred?person=anna — 某人当前的精选库(soft-delete 之外的,按收藏时间倒序)。 */
+/** GET /api/starred?person=anna — that person's current starred library (non-soft-deleted, newest first). */
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { ensureMethod, failError } from "@/lib/api";

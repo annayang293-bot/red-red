@@ -1,6 +1,6 @@
-"""数据源插件包。
+"""Data-source plugin package.
 
-公开 API:
+Public API:
   from pipeline.sources import get_source, available_sources, build_sources, SOURCE_REGISTRY
 """
 from .base import Source

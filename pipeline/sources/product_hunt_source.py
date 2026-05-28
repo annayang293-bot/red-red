@@ -1,12 +1,13 @@
-"""Product Hunt 源 —— 两种取数模式(config.product_hunt.auth_mode):
+"""Product Hunt source — two fetch modes (config.product_hunt.auth_mode):
 
-- "rss"(默认,零凭证):读公开 Atom 源 https://www.producthunt.com/feed
-  无需建 app / 无 token。局限:公开源**不含赞数/评论数** → raw_metrics 计 0
-  (靠 relevance + 时间近度参与排序)。
-- "token"(全数据):GraphQL v2,client_credentials 开发者 token,含
-  votesCount/commentsCount。需 .env 设 PH_CLIENT_ID / PH_CLIENT_SECRET。
+- "rss" (default, zero credentials): reads the public Atom feed at https://www.producthunt.com/feed
+  No app / no token required. Limitation: the public feed **doesn't include votes or comment counts** →
+  raw_metrics is all 0 (it gets sorted via relevance + recency instead).
+- "token" (full data): GraphQL v2, client_credentials developer token, with votesCount / commentsCount.
+  Needs PH_CLIENT_ID / PH_CLIENT_SECRET in .env.
 
-无新依赖(stdlib xml)。GraphQL 复杂度控制:token 模式只取必要字段、first<=20。
+No new dependencies (stdlib xml). GraphQL complexity is kept tight: token mode requests
+only the necessary fields, first<=20.
 """
 from __future__ import annotations
 
@@ -73,7 +74,7 @@ class ProductHuntSource(Source):
                 continue
             resp.raise_for_status()
             return resp
-        raise last if last else RuntimeError(f"请求失败: {url}")
+        raise last if last else RuntimeError(f"Request failed: {url}")
 
     # ---- fetch ----
     def fetch(self):
@@ -84,7 +85,7 @@ class ProductHuntSource(Source):
             return self._fetch_rss()
         except Exception as e:
             self.failed = True
-            print(f"[product_hunt:{self.mode}] 拉取失败(已重试): {e}")
+            print(f"[product_hunt:{self.mode}] fetch failed (after retries): {e}")
             return []
 
     # ---- rss (default, no token) ----
@@ -123,7 +124,7 @@ class ProductHuntSource(Source):
                 captured_at=now_iso(),
                 lang="en",
                 media_type="text",
-                # 公开 RSS 无互动数据 → 全 0(已知局限,token 模式补全)
+                # Public RSS has no engagement data → all zeros (known limitation; token mode fills these in)
                 raw_metrics={"likes": 0, "comments": 0, "saves": 0, "upvotes": 0},
                 source_native={"feed_id": native_id, "categories": cats,
                                "ph_mode": "rss"},
@@ -138,8 +139,8 @@ class ProductHuntSource(Source):
         csec = os.environ.get("PH_CLIENT_SECRET")
         if not cid or not csec:
             raise RuntimeError(
-                "token 模式缺少 PH_CLIENT_ID / PH_CLIENT_SECRET。"
-                "暂时无 token 可设 product_hunt.auth_mode: rss(默认)。")
+                "token mode is missing PH_CLIENT_ID / PH_CLIENT_SECRET. "
+                "If you don't have a token yet, set product_hunt.auth_mode: rss (default).")
         resp = self._request_with_retry(
             "POST", TOKEN_URL,
             json={"client_id": cid, "client_secret": csec,
@@ -159,15 +160,16 @@ class ProductHuntSource(Source):
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json",
                      "User-Agent": self._ua()})
-        # GraphQL 在 token 失效/scope 不对/query 被拒时仍返回 HTTP 200,但带 errors。
-        # 必须显式检查,否则会把失败伪装成"今天没数据"(静默失败)。
+        # GraphQL still returns HTTP 200 even when the token is invalid, scope is wrong, or the
+        # query is rejected — it just carries `errors`. Must check explicitly, otherwise failures
+        # get disguised as "no data today" (silent failure).
         payload = r.json()
         if payload.get("errors"):
-            raise RuntimeError(f"Product Hunt GraphQL 返回错误: {payload['errors']}")
+            raise RuntimeError(f"Product Hunt GraphQL returned errors: {payload['errors']}")
         posts = (payload.get("data") or {}).get("posts")
         if posts is None:
             raise RuntimeError(
-                f"Product Hunt GraphQL 响应缺少 data.posts: {str(payload)[:200]}")
+                f"Product Hunt GraphQL response missing data.posts: {str(payload)[:200]}")
         data = posts.get("edges", [])
         items: list[HotItem] = []
         for edge in data:
@@ -175,7 +177,7 @@ class ProductHuntSource(Source):
             nid = str(n.get("id", "") or "")
             url = n.get("url", "") or ""
             if not nid or not url:
-                print("[product_hunt:token] 跳过缺少 id/url 的条目")
+                print("[product_hunt:token] skipping entry missing id/url")
                 continue
             topics = [tp["node"]["name"] for tp in
                       n.get("topics", {}).get("edges", []) if tp.get("node")]

@@ -1,4 +1,4 @@
-/** GET /api/runs — 最近若干次 run 的概要(供历史列表/选择)。 */
+/** GET /api/runs — summary of the most recent N runs (for the history list / picker). */
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { ensureMethod, failError } from "@/lib/api";

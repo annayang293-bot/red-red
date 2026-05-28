@@ -1,12 +1,12 @@
-"""HotItem —— pipeline 内部统一数据契约(source → scoring → archive)。
+"""HotItem — the unified internal data contract for the pipeline (source → scoring → archive).
 
-每个数据源的 fetch() 都产出 List[HotItem],打分层只认这个结构,入库层把它
-落进 posts_archive(见 supabase/migrations/0001_init.sql)。新增数据源只要产出
-HotItem 即可接入,主线无需改动。
+Every data source's fetch() produces a List[HotItem]; the scoring layer only knows this shape,
+and the persistence layer lands it into posts_archive (see supabase/migrations/0001_init.sql).
+Adding a new data source just means producing HotItems — the pipeline itself doesn't change.
 
-字段对应 posts_archive:
-  - 全文不进 HotItem/DB —— 走 Supabase Storage,posts_archive.full_content_url 存 ref。
-  - raw_snippet = 轻量摘要(留 DB 直接查询用),clip 到 SNIPPET_MAX 控制行宽。
+Field correspondence with posts_archive:
+  - Full content is NOT in HotItem / DB — it goes to Supabase Storage; posts_archive.full_content_url stores the ref.
+  - raw_snippet = lightweight excerpt (kept in DB for direct querying), clipped to SNIPPET_MAX to bound row width.
 """
 from __future__ import annotations
 
@@ -17,15 +17,15 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 SCHEMA_VERSION = "v1"
-SNIPPET_MAX = 500  # raw_snippet 行宽上限(轻量摘要;全文走 Storage)
+SNIPPET_MAX = 500  # Row-width cap for raw_snippet (lightweight excerpt; full text in Storage)
 
-# 规范化 dedup_key 时剔除的跟踪参数前缀/精确名
+# Tracking-param prefixes/exact names stripped while building dedup_key
 _DROP_QS_PREFIXES = ("utm_",)
 _DROP_QS_EXACT = {"fbclid", "gclid", "ref", "ref_src", "ref_url", "spm"}
 
 
 def canonical_url(url: str) -> str:
-    """URL 规范化(dedup_key 基础;剔除跟踪参数、统一大小写/尾斜杠)。"""
+    """URL canonicalization (the basis of dedup_key; drops tracking params, normalizes case / trailing slash)."""
     if not url:
         return ""
     parts = urlsplit(url.strip())
@@ -42,7 +42,7 @@ def canonical_url(url: str) -> str:
 
 
 def make_id(source: str, native_id: str) -> str:
-    """稳定 hash id(source + 源原生 id)。对应 posts_archive(source, source_native_id)。"""
+    """Stable hash id (source + source-native id). Maps to posts_archive(source, source_native_id)."""
     return hashlib.sha1(f"{source}:{native_id}".encode("utf-8")).hexdigest()
 
 
@@ -70,20 +70,20 @@ class HotItem:
     id: str                       # make_id(source, native_id)
     dedup_key: str                # canonical_url(url)
     title: str
-    source: str                   # reddit | product_hunt | xiaohongshu —— == sources.source_key
-    source_native_id: str         # 源原生 id —— posts_archive(source, source_native_id) UNIQUE
+    source: str                   # reddit | product_hunt | xiaohongshu — == sources.source_key
+    source_native_id: str         # Source-native id — posts_archive(source, source_native_id) UNIQUE
     url: str
     author: str | None
-    published_at: str | None      # ISO8601 + 时区(UTC)
-    captured_at: str              # ISO8601 + 时区(UTC)
+    published_at: str | None      # ISO8601 + timezone (UTC)
+    captured_at: str              # ISO8601 + timezone (UTC)
     lang: str
     media_type: str               # text | image | video | mixed
     raw_metrics: dict             # {likes, comments, saves, upvotes}
-    source_native: dict           # 各源原生指标快照(结构允许各源不同)
-    hot_score: float = 0.0        # 0–100(来源内归一化,scoring 层填)
-    relevance_score: float = 0.0  # 0–1(scoring 层填)
+    source_native: dict           # Per-source native-metric snapshot (shape may differ by source)
+    hot_score: float = 0.0        # 0–100 (normalized within source; filled by scoring layer)
+    relevance_score: float = 0.0  # 0–1 (filled by scoring layer)
     tags: list = field(default_factory=list)
-    raw_snippet: str = ""         # <=SNIPPET_MAX 轻量摘要(全文走 Storage)
+    raw_snippet: str = ""         # <=SNIPPET_MAX lightweight excerpt (full text in Storage)
 
     def to_dict(self) -> dict:
         d = asdict(self)

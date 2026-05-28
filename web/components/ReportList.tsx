@@ -1,4 +1,5 @@
 import { ReportItem, tierColor } from "@/lib/types";
+import { useT } from "@/lib/i18n";
 
 export function Row({
   item,
@@ -11,14 +12,15 @@ export function Row({
   onToggle: (id: string) => void;
   showTierTag?: boolean;
 }) {
+  const { t } = useT();
   const metrics = item.likes
     ? `👍 ${item.likes} · 💬 ${item.comments}`
-    : "Product Hunt";
+    : t("list.product_hunt");
   return (
     <div className="flex gap-3 border-b border-line py-3 last:border-b-0">
       <button
         onClick={() => onToggle(item.id)}
-        title={starred ? "取消收藏" : "收藏到精选库"}
+        title={starred ? t("list.unstarTitle") : t("list.starTitle")}
         className={
           "shrink-0 text-lg leading-7 transition-colors " +
           (starred ? "text-mid" : "text-line hover:text-mid")
@@ -31,6 +33,7 @@ export function Row({
           href={item.url}
           target="_blank"
           rel="noopener noreferrer"
+          aria-label={t("list.openOriginalAria")}
           className="block text-[15px] font-semibold leading-snug text-ink hover:text-terra"
         >
           {showTierTag && <span className="mr-1">{item.tier_emoji}</span>}
@@ -40,7 +43,7 @@ export function Row({
           {item.source} · {metrics}
           {item.is_new === false && (
             <span className="ml-1.5 rounded bg-[#efe2d2] px-1.5 py-0.5 text-[10px] text-[#9a6a3a]">
-              🔁 老帖重现
+              {t("list.recurring")}
             </span>
           )}
         </div>
@@ -59,7 +62,7 @@ export default function ReportList({
   starred: Set<string>;
   onToggle: (id: string) => void;
 }) {
-  // 分档(组内保持 hot_score 顺序)
+  // Group by tier (keep hot_score order inside each group)
   const tiers: { emoji: string; name: string; desc: string; items: ReportItem[] }[] = [];
   for (const it of items) {
     let g = tiers.find((t) => t.emoji === it.tier_emoji && t.name === it.tier_name);
@@ -69,7 +72,8 @@ export default function ReportList({
     }
     g.items.push(it);
   }
-  // 档**按优先级排**:强 → 中 → 弱(别按"谁先出现"排,否则真 AI 分档下强迁移会跑到中迁移下面)
+  // Sort tiers by **priority**: strong → medium → weak (don't sort by "first appearance", otherwise
+  // under real AI tiering, strong items would sometimes appear below medium).
   const TIER_ORDER: Record<string, number> = { 强迁移: 0, 中等迁移: 1, 弱迁移: 2 };
   tiers.sort((a, b) => (TIER_ORDER[a.name] ?? 9) - (TIER_ORDER[b.name] ?? 9));
 

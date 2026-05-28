@@ -1,12 +1,12 @@
-"""AI 点评 + 强/中/弱迁移分档。
+"""AI review + strong/medium/weak migration tier.
 
-接口:review_fn(items, cfg) -> (meta: dict[item_id -> {tier, comment}], mode: str)
-  - mode = "ai"(真 LLM)/ "heuristic"(降级/占位)
-两种实现:
-  - heuristic_review:无需 OpenAI,按 hot_score 分档 + 模板点评(离线跑通 + 测试)。
-  - openai_review:真 LLM(gpt-4o-mini,走 api.openai.com 直连,绕开 Slock 代理)。
-    **任何失败 → 整体回退 heuristic**(Step 6 deferred「LLM 全失败回退 heuristic」)。
-select_review_fn():有 OPENAI_API_KEY → openai_review,否则 heuristic_review。
+Interface: review_fn(items, cfg) -> (meta: dict[item_id -> {tier, comment}], mode: str)
+  - mode = "ai" (real LLM) / "heuristic" (degraded / placeholder)
+Two implementations:
+  - heuristic_review: no OpenAI required; tiering by hot_score + template critique (works offline + in tests).
+  - openai_review: real LLM (gpt-4o-mini, direct to api.openai.com, bypassing the Slock proxy).
+    **Any failure → wholesale fallback to heuristic** (Step 6 deferred "LLM-all-fail → heuristic fallback").
+select_review_fn(): if OPENAI_API_KEY is set → openai_review, otherwise heuristic_review.
 """
 from __future__ import annotations
 
@@ -21,10 +21,11 @@ OPENAI_MODEL = "gpt-4o-mini"
 
 
 def heuristic_review(items, cfg):
-    """占位版:按 hot_score 在本次报告内的相对位置分三档 + 模板点评。
+    """Placeholder: 3-tier split by hot_score's relative position in this report + template critique.
 
-    注意:这不是真"迁移潜力"判断(那需要 LLM 读内容),只是让引擎能离线跑通。
-    真 LLM 版替换这个函数即可,接口不变。
+    Note: this isn't a real "migration potential" judgment (that requires an LLM to read the content);
+    it just lets the engine run end-to-end offline. To switch to a real LLM, replace this function —
+    the interface doesn't change.
     """
     meta = {}
     if not items:
@@ -44,11 +45,12 @@ def heuristic_review(items, cfg):
 
 
 def select_review_fn():
-    """有 OPENAI_API_KEY → 真 LLM 点评;否则 heuristic(离线/无 key 也能跑)。"""
+    """If OPENAI_API_KEY is set → real LLM review; otherwise heuristic (works offline / without a key)."""
     return openai_review if os.environ.get("OPENAI_API_KEY") else heuristic_review
 
 
 def _openai_prompt(items) -> str:
+    # Prompt body stays in Chinese: the model is asked to produce Chinese tier names + critique + xhs_title.
     lines = []
     for it in items:
         snippet = (it.raw_snippet or it.title or "")[:280]
@@ -64,16 +66,17 @@ def _openai_prompt(items) -> str:
 
 
 def openai_review(items, cfg):
-    """真 LLM 点评(api.openai.com 直连)。任何失败(无 key/网络/解析)→ 整体回退 heuristic。
+    """Real LLM review (direct to api.openai.com). Any failure (no key / network / parse) → wholesale fallback to heuristic.
 
-    部分覆盖(LLM 只点评了一部分条目)由 runner 的 sanity ai_meta_missing 标记,不在这里补。
+    Partial coverage (the LLM only reviewed some items) is flagged by the runner's ai_meta_missing
+    sanity check; it is not back-filled here.
     """
     if not items:
         return {}, "heuristic"
     try:
-        import requests  # 延迟导入:heuristic 路径不依赖 requests
-        key = os.environ["OPENAI_API_KEY"]  # 缺 → KeyError → 回退
-        # 直连 api.openai.com:trust_env=False 忽略环境代理(Slock 代理对 OpenAI 会 401)。
+        import requests  # Lazy import: the heuristic path doesn't need requests.
+        key = os.environ["OPENAI_API_KEY"]  # Missing → KeyError → fallback
+        # Direct to api.openai.com: trust_env=False ignores environment proxies (Slock proxy 401s on OpenAI).
         sess = requests.Session()
         sess.trust_env = False
         resp = sess.post(
@@ -99,8 +102,8 @@ def openai_review(items, cfg):
                              "comment": (row.get("comment") or "").strip(),
                              "xhs_title": (row.get("xhs_title") or "").strip() or None}
         if not meta:
-            raise ValueError("LLM 返回未解析出任何有效点评")
+            raise ValueError("LLM response had no valid review entries")
         return meta, "ai"
-    except Exception as e:  # noqa: BLE001 — LLM 全失败不致命,降级 heuristic 保证日报不空
-        print(f"[ai_review] LLM 点评失败,整体回退 heuristic: {e}")
+    except Exception as e:  # noqa: BLE001 — LLM all-fail isn't fatal; fall back to heuristic so the daily report isn't empty.
+        print(f"[ai_review] LLM review failed, wholesale fallback to heuristic: {e}")
         return heuristic_review(items, cfg)

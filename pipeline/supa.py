@@ -1,8 +1,8 @@
-"""Supabase 客户端工厂 —— 从环境变量 / `.env` 读 URL + secret key。
+"""Supabase client factory — reads URL + secret key from env / `.env`.
 
-数据读写走 PostgREST(HTTPS),用 secret key(service-role 等价)。
-密钥只从环境/.env 读,绝不硬编码;.env 已 gitignore。
-真用法:`from pipeline.supa import get_client; store = SupabaseStore(get_client())`
+Data read/write goes through PostgREST (HTTPS) with the secret key (equivalent to service-role).
+Keys come only from env / .env — never hardcoded; .env is gitignored.
+Real usage: `from pipeline.supa import get_client; store = SupabaseStore(get_client())`
 """
 from __future__ import annotations
 
@@ -22,8 +22,9 @@ def _load_dotenv_if_present() -> None:
             continue
         k, v = line.split("=", 1)
         k, v = k.strip(), v.strip()
-        # 去掉成对包裹引号(KEY="value" / KEY='value')。
-        # 不解析行内注释:secret key / URL 里可能含 '#',按 '#' 截断会损坏值。
+        # Strip matching surrounding quotes (KEY="value" / KEY='value').
+        # Don't parse inline comments: secret keys / URLs may contain '#', and truncating
+        # on '#' would corrupt the value.
         if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
             v = v[1:-1]
         if k:
@@ -32,12 +33,12 @@ def _load_dotenv_if_present() -> None:
 
 @lru_cache(maxsize=1)
 def get_client():
-    """构建并缓存 Supabase client。缺密钥则抛清晰错误。"""
+    """Build and cache the Supabase client. Raise a clear error if the keys are missing."""
     _load_dotenv_if_present()
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SECRET_KEY")
     if not url or not key:
         raise RuntimeError(
-            "缺 SUPABASE_URL / SUPABASE_SECRET_KEY(应在 system1-app/.env 或环境变量里)")
+            "Missing SUPABASE_URL / SUPABASE_SECRET_KEY (expected in system1-app/.env or env vars)")
     from supabase import create_client
     return create_client(url, key)

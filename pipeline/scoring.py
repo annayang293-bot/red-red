@@ -1,11 +1,11 @@
-"""打分 + 相关性 + 三闸门过滤 —— 从 legacy 移植(M1 FROZEN 公式,不改)。
+"""Scoring + relevance + three-gate filter — ported from legacy (M1 FROZEN formula, do not change).
 
 hot_score = (w_like*likes + w_comment*comments + w_saveshare*saves) * time_decay
-time_decay = 0.5 ^ (age_hours / half_life_hours) → 按来源内分布归一化到 0–100
-relevance_score = 关键词词表命中度(0–1)
-热点 = relevance >= 阈值 且 hot_score 进 Top hot_top_percent% 且 >= 绝对地板
-作用于 HotItem(字段:raw_metrics / published_at / captured_at / title / raw_snippet /
-hot_score / relevance_score)。
+time_decay = 0.5 ^ (age_hours / half_life_hours) → normalized within source to 0–100
+relevance_score = keyword-list hit rate (0–1)
+"Hot" = relevance ≥ threshold AND hot_score in Top hot_top_percent% AND ≥ absolute floor.
+Operates on HotItem (fields: raw_metrics / published_at / captured_at / title / raw_snippet /
+hot_score / relevance_score).
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def raw_hot(metrics: dict, sw: dict, age_h: float, half_life: float) -> float:
 
 
 def _kw_hit(kw: str, text: str) -> bool:
-    """ASCII 关键词用词边界(避免 ai∈said / ml∈html);CJK 关键词保留子串匹配。"""
+    """ASCII keywords use word boundaries (avoid ai ⊂ said / ml ⊂ html); CJK keywords keep substring match."""
     k = kw.lower().strip()
     if not k:
         return False
@@ -53,7 +53,7 @@ def relevance(title: str, snippet: str, keywords, full_hit: float = 5.0) -> floa
 
 
 def score_items(items, cfg, keywords):
-    """就地写入 hot_score(归一化 0–100) / relevance_score。返回 items。"""
+    """In-place write hot_score (normalized 0–100) / relevance_score. Returns items."""
     sw = cfg["scoring"]
     half_life = sw["half_life_hours"]
     full_hit = cfg.get("filter", {}).get("relevance_full_hit", 5)
@@ -70,7 +70,7 @@ def score_items(items, cfg, keywords):
 
 
 def filter_hot(items, cfg):
-    """三闸门:相关 + 相对热度(Top X%)+ 绝对热度地板。"""
+    """Three gates: relevant + relative hotness (Top X%) + absolute hotness floor."""
     if not items:
         return []
     thr = cfg["filter"]["relevance_threshold"]

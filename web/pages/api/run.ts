@@ -1,13 +1,14 @@
-/** POST /api/run { topic } — 触发一次主线跑(Node 起 Python 子进程)→ 落库 → 返回 run 概要。
+/** POST /api/run { topic } — trigger one pipeline run (Node spawns a Python subprocess) → DB → return run summary.
  *
- *  架构:Node 不重写 pipeline,直接以子进程跑 `python -m pipeline.run_once <topic>`
- *  (单次 30–60s,Vercel Fluid 300s 够)。子进程 stdout 末行是结果 JSON。 */
+ *  Architecture: Node doesn't reimplement the pipeline; it spawns `python -m pipeline.run_once <topic>`
+ *  as a subprocess (single run 30–60s, fits within Vercel Fluid's 300s budget). The subprocess's last
+ *  stdout line is the result JSON. */
 import type { NextApiRequest, NextApiResponse } from "next";
 import { spawn } from "child_process";
 import path from "path";
 import { ensureMethod, failError } from "@/lib/api";
 
-// next dev/build 的 cwd = web/;pipeline 包在上一级 system1-app/。
+// next dev/build cwd = web/; the pipeline package lives one level up at system1-app/.
 const PIPELINE_CWD = path.resolve(process.cwd(), "..");
 const PYTHON_BIN = process.env.PYTHON_BIN || "python3";
 const RUN_TIMEOUT_MS = 180_000;
@@ -38,7 +39,7 @@ function runPipeline(topic: string): Promise<RunResult> {
 
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error("pipeline 超时(>180s)"));
+      reject(new Error("pipeline timed out (>180s)"));
     }, RUN_TIMEOUT_MS);
 
     child.on("error", (e) => {
@@ -53,7 +54,7 @@ function runPipeline(topic: string): Promise<RunResult> {
       } catch {
         reject(
           new Error(
-            `pipeline 输出无法解析(exit ${code}): ${lastLine || err.slice(-500) || "(空)"}`
+            `pipeline output could not be parsed (exit ${code}): ${lastLine || err.slice(-500) || "(empty)"}`
           )
         );
       }

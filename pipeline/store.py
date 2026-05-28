@@ -1,20 +1,22 @@
-"""Step 6 数据层:RunResult → Supabase(runs / posts_archive / report_top20)+ 精选库读写。
+"""Step 6 data layer: RunResult → Supabase (runs / posts_archive / report_top20) + starred-library read/write.
 
-设计:
-- `runresult_to_rows(res)`:纯映射(RunResult → 行 dict),无 IO,可单测。
-- `SupabaseStore(client)`:包 supabase-py 客户端真写库(需 SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)。
-  client 注入 → 测试用 fake、不依赖真实 DB / 网络 / 凭据。
+Design:
+- `runresult_to_rows(res)`: pure mapping (RunResult → row dicts), no IO, unit-testable.
+- `SupabaseStore(client)`: wraps the supabase-py client for real DB writes (needs SUPABASE_URL +
+  SUPABASE_SERVICE_ROLE_KEY). Client is injected → tests use a fake, no real DB / network / creds required.
 
-关键(收 deferred):posts_archive 用 **UNIQUE(source, source_native_id)** upsert → 拿回真
-`post_id`;report_top20 / starred 一律引真 `post_id`(不再用 URL-hash / rank 当身份)。
-真实 client:`from supabase import create_client; create_client(url, service_role_key)`。
+Key (closing the deferred): posts_archive upserts on **UNIQUE(source, source_native_id)** to get
+back the real `post_id`; report_top20 / starred always reference the real `post_id` (no more
+URL-hash / rank as identity).
+Real client: `from supabase import create_client; create_client(url, service_role_key)`.
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
-# AI 点评用全名("强迁移"…),但 report_top20.tier 的 CHECK 约束是短名('强'/'中'/'弱')。
-# 写库时映射到短名(schema 单一真相);ai_review JSONB 无约束,保留全名(更描述性)。
+# AI review uses full names ("强迁移" etc.), but report_top20.tier's CHECK constraint is short names
+# ('强'/'中'/'弱'). Map to short names at write time (schema is the single source of truth);
+# ai_review JSONB has no constraint, so it keeps the full names (more descriptive).
 TIER_DB = {"强迁移": "强", "中等迁移": "中", "弱迁移": "弱"}
 
 
@@ -22,9 +24,9 @@ def _tier_db(tier):
     return TIER_DB.get(tier, tier)
 
 
-# ---------------- 纯映射(可单测,无 IO) ----------------
+# ---------------- Pure mapping (unit-testable, no IO) ----------------
 def _post_row(it, fp: str, ai: Optional[dict]) -> dict:
-    """HotItem → posts_archive 行(不含 run_id / post_id,由写库时填/取)。"""
+    """HotItem → posts_archive row (excluding run_id / post_id, those are filled / fetched at write time)."""
     sn = it.source_native or {}
     return {
         "source": it.source,
@@ -36,19 +38,19 @@ def _post_row(it, fp: str, ai: Optional[dict]) -> dict:
         "hot_score": it.hot_score,
         "relevance_score": it.relevance_score,
         "tags_json": it.tags,
-        "ai_review": ai,                       # {tier, comment} 仅 top 内的有
+        "ai_review": ai,                       # {tier, comment} only present for items in top
         "published_at": it.published_at,
         "fetched_at": it.captured_at,
         "config_fingerprint": sn.get("config_fingerprint", fp),
         "source_native": sn,
-        "full_content_url": None,              # 全文走 Storage,后续接
+        "full_content_url": None,              # Full text in Storage, wired later
     }
 
 
 def runresult_to_rows(res) -> dict:
-    """RunResult → {run, posts, report}。report 用 (source, source_native_id) 指代帖子,
-    写库 upsert 后再换成真 post_id(见 SupabaseStore.save)。"""
-    # top 里每条的 ai 点评,按 (source, native_id) 索引
+    """RunResult → {run, posts, report}. report refers to posts via (source, source_native_id);
+    after the DB upsert we swap that for the real post_id (see SupabaseStore.save)."""
+    # Per-item AI review from `top`, indexed by (source, native_id)
     ai_by_key = {
         (r["item"].source, r["item"].source_native_id): {
             "tier": r["tier"], "comment": r["comment"]}
@@ -67,10 +69,13 @@ def runresult_to_rows(res) -> dict:
         "sanity_anomalies": res.sanity.get("anomalies"),
         "config_fingerprint": res.config_fingerprint,
         "error_message": None,
+        # Full subreddit list (Anna 2026-05-27, so the topic mapping is visible in the UI; only write when non-None)
+        "subreddits": list(getattr(res, "subreddits", None) or []) or None,
     }
-    # 要落 posts_archive 的帖子 = scored 集 ∪ report 里的帖子。
-    # (select_ranked 的 PH 配额项可能不在 scored 集,但出现在 report;report_top20.post_id
-    #  是 FK,这些帖子必须也在 posts_archive,否则外键挂掉/报告条目丢失。)
+    # Posts to land in posts_archive = scored set ∪ posts in the report.
+    # (select_ranked's PH-quota items may not be in the scored set but show up in the report;
+    #  report_top20.post_id is a FK, so those posts must also exist in posts_archive — otherwise
+    #  the FK breaks / report rows are lost.)
     seen: set = set()
     union = []
     for it in list(res.posts) + [r["item"] for r in res.top]:
@@ -84,8 +89,9 @@ def runresult_to_rows(res) -> dict:
                   ai_by_key.get((it.source, it.source_native_id)))
         for it in union
     ]
-    # report 行带 per-run 点评(comment / xhs_title)——这些随 run 变,落 report_top20,
-    # 不落 append-only 的 posts_archive(否则同帖二次进报告会读到首次旧点评,Rex 🔴1)。
+    # Report rows carry per-run review (comment / xhs_title) — these change run to run, so they land
+    # in report_top20, NOT in the append-only posts_archive (otherwise a post re-entering the report
+    # would read the first run's stale review, Rex 🔴1).
     report = [
         {"rank": r["rank"], "tier": r["tier"],
          "comment": r.get("comment"), "xhs_title": r.get("xhs_title"),
@@ -95,7 +101,7 @@ def runresult_to_rows(res) -> dict:
     return {"run": run, "posts": posts, "report": report}
 
 
-# ---------------- Supabase 写/读(client 注入) ----------------
+# ---------------- Supabase read/write (client injected) ----------------
 class SupabaseStore:
     def __init__(self, client: Any):
         self.c = client
@@ -105,12 +111,13 @@ class SupabaseStore:
         return getattr(res, "data", res)
 
     def ensure_topic(self, keyword: str) -> int:
-        """解析本次 run 归属的 topic_id —— 与"同时刻最多 1 个 active topic"模型一致。
+        """Resolve the topic_id this run belongs to — aligned with the "at most 1 active topic" model.
 
-        规则(不在 save 里隐式切主题 / 不复用 archived):
-          1) 有匹配 keyword 的 active topic → 用它(正常情形)
-          2) 已存在别的 keyword 的 active topic → fail loud(切主题须经 topic 管理层显式操作)
-          3) 全局无任何 active topic → 为此 keyword 建一个 active(不会撞 uq_topics_one_active)
+        Rules (don't implicitly switch topics / don't reuse archived ones in save):
+          1) An active topic matching the keyword exists → use it (normal case).
+          2) A different keyword has an active topic already → fail loud (switching topics must
+             go through the topic-management layer explicitly).
+          3) No active topic at all → create an active one for this keyword (won't collide with uq_topics_one_active).
         """
         match = self._exec(
             self.c.table("topics").select("topic_id")
@@ -122,23 +129,26 @@ class SupabaseStore:
             .eq("status", "active").limit(1))
         if other:
             raise RuntimeError(
-                f"已有 active topic(keyword={other[0].get('keyword')!r}),与本次 run "
-                f"keyword={keyword!r} 不符;切主题需经 topic 管理层显式操作,不在 save() 里隐式建/切。"
-                " 可显式传 topic_id=... 给 save()。")
+                f"Active topic already exists (keyword={other[0].get('keyword')!r}); does not match this run's "
+                f"keyword={keyword!r}. Topic switching must go through the topic-management layer, "
+                "not be implicitly created/switched inside save(). Pass topic_id=... to save() if you want to override.")
         created = self._exec(self.c.table("topics").insert(
             {"keyword": keyword, "status": "active"}))
         return created[0]["topic_id"]
 
     def save(self, res, topic_id: Optional[int] = None) -> int:
-        """把一次 RunResult 落库:topic → run → posts → report_top20(用真 post_id)。返回 run_id。
+        """Persist one RunResult: topic → run → posts → report_top20 (with real post_ids). Returns run_id.
 
-        posts_archive 是 **append-only 历史快照**(Rex 🔴1):同一帖子(source, source_native_id)
-        只在首次出现时 insert;后续 run 再遇到只复用已有 post_id,**绝不覆写历史行**。
-        (run_id / hot_score / relevance_score / ai_review / config_fingerprint 都是
-         "那一次 run 的快照";blanket upsert 会把旧 run 的历史悄悄改写 → report_top20 join
-         回 posts_archive 时历史视图失真。所以这里改成"查已有 → 只插新"。)
+        posts_archive is an **append-only historical snapshot** (Rex 🔴1): the same post (source,
+        source_native_id) only gets inserted on first sight; later runs that re-encounter it reuse
+        the existing post_id and **never overwrite history rows**.
+        (run_id / hot_score / relevance_score / ai_review / config_fingerprint are all "snapshot
+         of that run"; a blanket upsert would silently rewrite older runs' history → report_top20
+         joins back to posts_archive would then show a distorted historical view. So this is rewritten
+         as "lookup existing → insert new only".)
 
-        topic_id 可显式传(切主题等场景由上层决定);不传则走 ensure_topic 的保守解析。
+        topic_id can be passed explicitly (the upper layer decides on topic-switch scenarios); without it,
+        ensure_topic's conservative resolver is used.
         """
         rows = runresult_to_rows(res)
         if topic_id is None:
@@ -147,8 +157,8 @@ class SupabaseStore:
         run_row = dict(rows["run"], topic_id=topic_id)
         run_id = self._exec(self.c.table("runs").insert(run_row))[0]["run_id"]
 
-        # posts_archive:先查已存在(按 source_native_id),只 insert 没见过的帖子,
-        # 已存在的复用其 post_id —— 历史行只写一次,永不覆写。
+        # posts_archive: look up existing rows (by source_native_id), only insert posts never seen before;
+        # existing ones reuse their post_id — history rows are written once, never overwritten.
         key_to_pid: dict[tuple, int] = {}
         if rows["posts"]:
             nids = [p["source_native_id"] for p in rows["posts"]]
@@ -156,8 +166,9 @@ class SupabaseStore:
                 self.c.table("posts_archive")
                 .select("post_id,source,source_native_id")
                 .in_("source_native_id", nids))
-            # UNIQUE 是 (source, source_native_id),按二元组建索引
-            #(in_ 可能多回别的 source 同 native_id 的行,按二元组取就不会错配)
+            # UNIQUE is (source, source_native_id), so index by the 2-tuple
+            # (in_ may return rows from other sources sharing the same native_id; indexing by the
+            #  tuple guarantees we don't misattribute).
             for r in existing:
                 key_to_pid[(r["source"], r["source_native_id"])] = r["post_id"]
             new_rows = [
@@ -165,17 +176,17 @@ class SupabaseStore:
                 if (p["source"], p["source_native_id"]) not in key_to_pid
             ]
             if new_rows:
-                # supabase-py insert 默认 return=representation,直接返回带 post_id 的整行
+                # supabase-py insert defaults to return=representation, so it returns full rows with post_id.
                 saved = self._exec(self.c.table("posts_archive").insert(new_rows))
                 for r in saved:
                     key_to_pid[(r["source"], r["source_native_id"])] = r["post_id"]
 
-        # report_top20:引真 post_id(top 帖必在 key_to_pid:要么已存在、要么刚 insert)
+        # report_top20: reference the real post_id (top posts must be in key_to_pid: either pre-existing or just inserted)
         rep_rows = []
         for r in rows["report"]:
             pid = key_to_pid.get((r["source"], r["source_native_id"]))
             if pid is None:
-                continue   # 防御性:理论上 union 已保证 top 帖都进了 posts_archive
+                continue   # Defensive: the union step above guarantees top posts entered posts_archive.
             rep_rows.append({"run_id": run_id, "post_id": pid,
                              "rank": r["rank"], "tier": _tier_db(r["tier"]),
                              "comment": r.get("comment"), "xhs_title": r.get("xhs_title")})
@@ -183,13 +194,13 @@ class SupabaseStore:
             self._exec(self.c.table("report_top20").insert(rep_rows))
         return run_id
 
-    # ---- 精选库 ----
+    # ---- Starred library ----
     def add_star(self, person: str, post_id: int, run_id: Optional[int] = None) -> None:
         self._exec(self.c.table("starred").insert(
             {"person": person, "post_id": post_id, "run_id": run_id}))
 
     def remove_star(self, person: str, post_id: int) -> None:
-        # 软删:置 deleted_at(配合 partial UNIQUE active)
+        # Soft delete: set deleted_at (works with the partial UNIQUE on active rows)
         from datetime import datetime, timezone
         self._exec(
             self.c.table("starred")
@@ -197,7 +208,8 @@ class SupabaseStore:
             .eq("person", person).eq("post_id", post_id).is_("deleted_at", "null"))
 
     def get_starred(self, person: str) -> list:
-        # 按收藏时间倒序(最新在前)—— 前端精选库要稳定顺序,别靠 DB 默认行序(Rex 🟡)。
+        # Sort by starred-time descending (newest first) — the frontend starred library needs a stable order;
+        # don't rely on the DB's default row order (Rex 🟡).
         return self._exec(
             self.c.table("starred").select("*, posts_archive(*)")
             .eq("person", person).is_("deleted_at", "null")

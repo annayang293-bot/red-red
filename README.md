@@ -1,46 +1,46 @@
-# AI 小红书 IP
+# AI Xiaohongshu IP
 
-给小红书账号"省心做选题 + 写稿 + 复盘"的一整套系统。三个子系统:
+A complete system that takes the pain out of "picking topics + drafting + reviewing" for a Xiaohongshu account. Three subsystems:
 
-- **系统① 热点选题**(本仓库代码,开发中 / 部分上线)
-- **系统② 稿件生成**(规划中)
-- **系统③ 数据分析**(规划中)
+- **System ① Topic discovery** (this repo, in development / partially shipped)
+- **System ② Draft generation** (planned)
+- **System ③ Data analysis** (planned)
 
 ---
 
-## 系统① · 热点选题(本仓库)
+## System ① · Topic discovery (this repo)
 
-输入一个主题(比如 `AI 创业`),它会:
+Given a topic (e.g. `AI startup`), it:
 
-1. 自动找出该主题下相关的版块 + 关键词;
-2. 抓取这些版块最近的热门帖,打分排序;
-3. 用 AI 判断"能不能迁移到小红书做选题",给中文点评 + 标题;
-4. 出一份 Top 20 报告,可以一条一条收藏。
+1. Auto-discovers the relevant subreddits + keywords for that topic;
+2. Scrapes the latest hot posts from those sources, scores and ranks them;
+3. Uses AI to judge "can this be ported to Xiaohongshu as a topic?", with a Chinese-language critique + suggested title;
+4. Produces a Top 20 report you can star item-by-item.
 
-主题可以随时切换(每个主题各自一份历史)。
+The active topic can be switched any time (each topic has its own history).
 
-### 技术栈
+### Stack
 
-- **前端**:Next.js 16 + React 19 + Tailwind v4(`web/`)
-- **后端 / 主线**:Python(`pipeline/`)
-- **数据库**:Supabase(PostgreSQL)
-- **AI 点评**:OpenAI gpt-4o-mini
-- **部署**:Vercel(Hobby + Fluid Compute)
+- **Frontend**: Next.js 16 + React 19 + Tailwind v4 (`web/`)
+- **Backend / pipeline**: Python (`pipeline/`)
+- **Database**: Supabase (PostgreSQL)
+- **AI review**: OpenAI gpt-4o-mini
+- **Deployment**: Vercel (Hobby + Fluid Compute)
 
-### 仓库结构
+### Repo layout
 
 ```
-supabase/migrations/   # 数据库 schema
-pipeline/              # Python 主线(抓取 / 打分 / AI 点评)
-web/                   # Next.js 前端(网页 + API 路由)
-scripts/               # 一次性工具(数据迁移等)
-docs/                  # 文档
-preview/               # 设计预览生成器
+supabase/migrations/   # Database schema
+pipeline/              # Python pipeline (fetch / score / AI review)
+web/                   # Next.js frontend (pages + API routes)
+scripts/               # One-shot tooling (data migration, etc.)
+docs/                  # Documentation
+preview/               # Design preview generator
 ```
 
-### 本地开发
+### Local development
 
-1. 配置环境变量(在仓库根目录)。复制 `.env.example` 到 `.env`,填入你的 keys:
+1. Configure environment variables (at the repo root). Copy `.env.example` to `.env` and fill in your keys:
 
    ```
    SUPABASE_URL=...
@@ -49,25 +49,25 @@ preview/               # 设计预览生成器
    REDDIT_USER_AGENT=python:system1-app:v0.1 (by /u/yourname)
    ```
 
-   网页端的 `.env.local`(在 `web/` 里)需要 `SUPABASE_URL` 和 `SUPABASE_SECRET_KEY`。
+   The web app's `.env.local` (in `web/`) needs `SUPABASE_URL` and `SUPABASE_SECRET_KEY`.
 
-2. 跑前端:
+2. Run the frontend:
 
    ```
    cd web
    npm install
-   npm run dev   # 默认 http://localhost:3000
+   npm run dev   # defaults to http://localhost:3000
    ```
 
-3. 跑一次主线(命令行,会写库):
+3. Run the pipeline once (from the CLI, writes to the database):
 
    ```
-   python3 -m pipeline.run_once "AI 创业"
+   python3 -m pipeline.run_once "AI startup"
    ```
 
-   或者在网页 `跑一次` 页直接点"开始跑"。
+   Or click "Run" on the web "Run" tab.
 
-4. 跑测试:
+4. Run the tests:
 
    ```
    python3 pipeline/tests/test_runner.py
@@ -76,6 +76,6 @@ preview/               # 设计预览生成器
    python3 pipeline/tests/test_topic_resolve.py
    ```
 
-### 数据库
+### Database
 
-Supabase migrations 按顺序在 SQL Editor 跑(`supabase/migrations/000X_*.sql`):核心表 9 张 + 两个 plpgsql RPC(主题硬切换 / 删主题级联)。
+Apply the Supabase migrations in order in the SQL Editor (`supabase/migrations/000X_*.sql`): 9 core tables + two plpgsql RPCs (atomic topic switch / cascade topic delete).

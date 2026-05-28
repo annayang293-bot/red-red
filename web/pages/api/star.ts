@@ -1,8 +1,8 @@
-/** /api/star — 收藏(POST)/ 取消收藏(DELETE,软删)。body: { post_id, person? }
+/** /api/star — star (POST) / unstar (DELETE, soft delete). body: { post_id, person? }
  *
- *  软删模型(对齐 schema uq_starred_active partial unique):
- *  - POST:插一条 active star;若已 active(唯一冲突 23505)→ 幂等返回 already。
- *  - DELETE:把该人对该帖的 active star 置 deleted_at(历史保留,可再 star)。 */
+ *  Soft-delete model (aligned with schema's uq_starred_active partial unique):
+ *  - POST: insert an active star; if already active (unique conflict 23505) → idempotently return already.
+ *  - DELETE: set deleted_at on this person's active star for this post (history preserved, re-star allowed). */
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { ensureMethod, failError } from "@/lib/api";
@@ -20,13 +20,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const { error } = await sb.from("starred").insert({ person, post_id: postId });
       if (error) {
         if (error.code === "23505") {
-          return res.status(200).json({ ok: true, already: true }); // 已收藏,幂等
+          return res.status(200).json({ ok: true, already: true }); // already starred — idempotent
         }
         throw error;
       }
       return res.status(200).json({ ok: true });
     }
-    // DELETE = 软删:只软删当前 active 的那条
+    // DELETE = soft delete: only soft-delete the currently active row
     const { error } = await sb
       .from("starred")
       .update({ deleted_at: new Date().toISOString() })

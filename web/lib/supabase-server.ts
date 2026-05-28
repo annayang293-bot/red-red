@@ -1,10 +1,11 @@
 /**
- * 服务端 Supabase client(只在 API 路由里 import,绝不进浏览器 bundle)。
+ * Server-side Supabase client (only imported by API routes, never bundled to the browser).
  *
- * 用 secret key(service-role 等价)走 PostgREST。key 只在 server 端 process.env,
- * 本地放 web/.env.local(gitignored),Vercel 部署配同名环境变量(Step 8)。
+ * Uses the secret key (equivalent to service-role) over PostgREST. Key lives in server-side
+ * process.env only; locally in web/.env.local (gitignored), in Vercel deploys via env vars (Step 8).
  *
- * 懒构建:缺 key 时只在被调用那刻抛错,不在 import/build 期炸(CI build 无 key 也能过)。
+ * Lazy build: missing key only throws at the moment of use, not at import / build time
+ * (so a CI build without keys still passes).
  */
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
@@ -16,7 +17,7 @@ export function getSupabaseAdmin(): SupabaseClient {
   const key = process.env.SUPABASE_SECRET_KEY;
   if (!url || !key) {
     throw new Error(
-      "缺 SUPABASE_URL / SUPABASE_SECRET_KEY(本地放 web/.env.local;Vercel 配环境变量)"
+      "Missing SUPABASE_URL / SUPABASE_SECRET_KEY (locally in web/.env.local; configure as env vars on Vercel)"
     );
   }
   _client = createClient(url, key, {

@@ -1,5 +1,5 @@
-/** GET /api/run/[id] — 某次 run 的报告(report_top20 join posts_archive)。
- *  id = "latest" → 最近一次 run;否则按 run_id 数字。 */
+/** GET /api/run/[id] — one run's report (report_top20 joined with posts_archive).
+ *  id = "latest" → the most recent run; otherwise numeric run_id. */
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { ensureMethod, failError } from "@/lib/api";
@@ -11,10 +11,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const sb = getSupabaseAdmin();
     const idParam = String(req.query.id ?? "");
 
-    // 解析目标 run
-    let runQuery = sb.from("runs").select("run_id, topic_keyword, started_at");
+    // Resolve the target run
+    let runQuery = sb.from("runs").select("run_id, topic_keyword, started_at, subreddits");
     if (idParam === "latest") {
-      // "最近一次" = **当前 active topic** 的最近一次(否则切到没跑过的新主题会串到别题的旧报告)
+      // "Most recent" = most recent run of the **current active topic** (otherwise switching to a
+      // brand-new untouched topic would bleed an older report from another topic).
       const { data: actives, error: aErr } = await sb
         .from("topics").select("topic_id").eq("status", "active").limit(1);
       if (aErr) throw aErr;
@@ -43,7 +44,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const items = reportRowsToItems((rows ?? []) as unknown as ReportRow[], runRow.run_id);
     const date = String(runRow.started_at ?? "").slice(0, 10);
     const report = buildReport(date, runRow.topic_keyword ?? "", items);
-    res.status(200).json({ run_id: runRow.run_id, report });
+    // scrapedSubreddits = full fetched list (Anna 2026-05-27, topic-mapping visibility)
+    const scrapedSubreddits: string[] = Array.isArray(runRow.subreddits)
+      ? (runRow.subreddits as string[]).filter((s) => typeof s === "string")
+      : [];
+    res.status(200).json({ run_id: runRow.run_id, report, scrapedSubreddits });
   } catch (e) {
     failError(res, e);
   }

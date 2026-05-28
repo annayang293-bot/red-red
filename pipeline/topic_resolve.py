@@ -1,8 +1,9 @@
-"""主题 → reddit 版块 + 相关关键词 的 LLM 落地。**补完 Step 3 算法→真实抓取的接入**。
+"""Topic → reddit subreddits + relevance keywords via LLM. **Closes the Step 3 algorithm → real-fetch wiring.**
 
-Step 3 的 TopicMapper 算法本身已 Rex 过审;它依赖"去 Reddit 搜版块"那条 gated 在 §7。
-这里**绕开 Reddit 搜索**,只用 LLM(gpt-4o-mini)推荐版块 + per-topic 关键词,接进 run_once。
-失败/无 key → 各自回退默认。
+Step 3's TopicMapper algorithm itself is Rex-approved; it depended on "search Reddit for subreddits"
+which is gated in §7. Here we **bypass Reddit search** and use the LLM (gpt-4o-mini) for both
+subreddit recommendations + per-topic keywords, then wire into run_once.
+On failure / missing key → each side falls back to defaults.
 """
 from __future__ import annotations
 
@@ -18,7 +19,8 @@ DEFAULT_MODEL = "gpt-4o-mini"
 
 
 def _openai_json(prompt: str) -> Optional[dict]:
-    """调 LLM 拿 JSON。无 key / 任何失败 → None(调用方回退)。直连 api.openai.com,绕环境代理。"""
+    """Call the LLM and parse JSON. Missing key / any failure → None (caller falls back).
+    Direct to api.openai.com, bypassing environment proxies."""
     if not os.environ.get("OPENAI_API_KEY"):
         return None
     try:
@@ -42,12 +44,13 @@ def _openai_json(prompt: str) -> Optional[dict]:
         r.raise_for_status()
         return json.loads(r.json()["choices"][0]["message"]["content"])
     except Exception as e:  # noqa: BLE001
-        print(f"[topic_resolve] LLM 调用失败: {e}", file=sys.stderr)
+        print(f"[topic_resolve] LLM call failed: {e}", file=sys.stderr)
         return None
 
 
 def _llm_subreddits(keyword: str) -> list[str]:
-    """LLM 给该主题的相关 subreddit 名(供 TopicMapper 的 llm_suggest_fn)。要 10 个 → 后面过验证再砍。"""
+    """LLM suggests subreddits for the topic (used by TopicMapper's llm_suggest_fn). Ask for 10 → verification trims down."""
+    # Prompt body stays in Chinese: instructions are clearer to the model, and the requested output is name strings.
     prompt = (
         f"主题:'{keyword}'。请推荐 10 个**真实存在、活跃、聚焦该主题**的英文 subreddit 名"
         "(不带 r/ 前缀;只用字母/数字/下划线;不要广义大众版块如 funny/news/pics)。\n"
@@ -63,8 +66,9 @@ def _llm_subreddits(keyword: str) -> list[str]:
 
 
 def _verify_subreddit(name: str) -> bool:
-    """ping `r/<name>/about.json` 验证存在。404=确认不存在(LLM 幻觉)→剔除;
-    其它结果(200/403/5xx/超时)= 不能确认不存在 → 保留(留给主抓取再试)。"""
+    """Ping `r/<name>/about.json` to verify existence. 404 = confirmed nonexistent (LLM hallucination) → drop;
+    anything else (200/403/5xx/timeout) = can't confirm absence → keep (let the main fetch retry).
+    """
     try:
         import requests
         ua = os.environ.get("REDDIT_USER_AGENT", "python:system1-app:v0.1 (by /u/system1app)")
@@ -80,12 +84,64 @@ def _verify_subreddit(name: str) -> bool:
                 return False
         return True
     except Exception:
-        return True   # 验证不通也别拦——后面主抓取真碰到再算失败
+        return True   # If verification itself fails, don't block — let the main fetch decide if it really fails.
 
 
 def _noop_reddit_search(_keyword: str, _limit: int) -> list[dict]:
-    """绕开 Reddit 版块搜索(匿名不稳)——返回空,候选全靠 LLM。"""
+    """Bypass Reddit subreddit search (anonymous is unstable) — return empty; candidates come solely from the LLM."""
     return []
+
+
+def _cache_get(client, keyword: str) -> Optional[dict]:
+    """Read topics_cache: **hit = reuse, no TTL check** (Anna 2026-05-28: don't want "all subreddits change after 7 days";
+    once decided, stays stable). expires_at / hard_ceiling_at are still filled at write time per the schema (NOT NULL),
+    but reads don't check them — effectively = never expires.
+    To force-refresh the mapping → DELETE FROM topics_cache WHERE topic_keyword=... (or add a UI button later)."""
+    try:
+        rows = client.table("topics_cache").select("*").eq("topic_keyword", keyword).limit(1).execute().data
+        if not rows:
+            return None
+        row = rows[0]
+        # Extract subreddit names + keywords
+        subs_blob = row.get("subreddits") or {}
+        # Tolerate two shapes: JSON list or {"names":[...]} (we write a list, but the schema's JSONB is flexible)
+        if isinstance(subs_blob, list):
+            subs = [s for s in subs_blob if isinstance(s, str)]
+        elif isinstance(subs_blob, dict):
+            names = subs_blob.get("names") or []
+            subs = [s for s in names if isinstance(s, str)]
+        else:
+            subs = []
+        kws = row.get("keywords") or []
+        if isinstance(kws, list):
+            kws = [k for k in kws if isinstance(k, str)]
+        else:
+            kws = []
+        if not subs or not kws:
+            return None
+        return {"subreddits": subs, "keywords": kws}
+    except Exception as e:  # noqa: BLE001
+        print(f"[topic_resolve] cache read failed, falling back to LLM: {e}", file=sys.stderr)
+        return None
+
+
+def _cache_set(client, keyword: str, subs: list[str], kws: list[str]) -> None:
+    """Write topics_cache (UPSERT on topic_keyword, 7d TTL, 30d hard_ceiling). Failure doesn't affect the main flow."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        # Schema requires subreddits / cached_at / expires_at / hard_ceiling_at NOT NULL
+        row = {
+            "topic_keyword": keyword,
+            "subreddits": list(subs),
+            "keywords": list(kws),
+            "cached_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=7)).isoformat(),
+            "hard_ceiling_at": (now + timedelta(days=30)).isoformat(),
+        }
+        client.table("topics_cache").upsert(row, on_conflict="topic_keyword").execute()
+    except Exception as e:  # noqa: BLE001
+        print(f"[topic_resolve] cache write failed (does not affect this run's result): {e}", file=sys.stderr)
 
 
 def resolve_topic(
@@ -94,16 +150,35 @@ def resolve_topic(
     fallback_keywords: list[str],
     *,
     target_count: int = 6,
+    cache_client=None,
 ) -> dict:
-    """主题 → {subreddits: [...], keywords: [...]}。
+    """Topic → {subreddits: [...], keywords: [...]}.
 
-    subreddits:复用 Step 3 TopicMapper(LLM suggest 路径,no-op reddit-search 绕开 §7 依赖)。
-    keywords:per-topic 相关性判断词,单独一次 LLM 调用。两条任一失败,各自回退默认。
+    cache_client (Supabase client): if passed → first check topics_cache (no TTL check; permanent
+      since 2026-05-28). Hit = reuse directly (fixes "same topic chooses different subreddits each run",
+      Anna 2026-05-27 → simplified 2026-05-28 to permanent cache).
+    subreddits: reuses Step 3 TopicMapper (LLM-suggest path, no-op reddit-search to bypass the §7 dependency).
+    keywords: per-topic relevance keywords via a separate LLM call. Either side's failure falls back to defaults.
     """
-    # 1) subreddits:LLM 推荐 → 验证存在(剔 LLM 幻觉的 404)→ 取 target_count 个;实在没了再回退
+    # 0) Cache hit (reuse the same topic) → don't call LLM, **stay consistent**
+    if cache_client is not None:
+        cached = _cache_get(cache_client, keyword)
+        if cached:
+            print(f"[topic_resolve] cache hit: subs={cached['subreddits']} | keywords({len(cached['keywords'])})", file=sys.stderr)
+            return {
+                "subreddits": cached["subreddits"],
+                "keywords": cached["keywords"],
+                # What's in cache was LLM-derived → treat as llm source (the relax/no-relax logic
+                # behaves the same as a freshly-computed LLM result).
+                "subreddits_source": "llm",
+                "keywords_source": "llm",
+            }
+
+    # 1) subreddits: LLM suggest → verify existence (drop 404 hallucinations) → take target_count; if nothing left, fall back
     raw_subs: list[str] = []
     try:
-        # 让 LLM 路径多给(_llm_subreddits 要 10),TopicMapper 先按算法取 2*target;后面验证再砍
+        # Have the LLM path over-supply (_llm_subreddits asks for 10); TopicMapper applies its algorithm
+        # to 2*target first; verification trims down.
         mapper = TopicMapper(
             reddit_search_fn=_noop_reddit_search,
             llm_suggest_fn=_llm_subreddits,
@@ -112,7 +187,7 @@ def resolve_topic(
         result = mapper.map_topic(keyword)
         raw_subs = list(result.subreddit_names)
     except Exception as e:  # noqa: BLE001
-        print(f"[topic_resolve] TopicMapper 失败: {e}", file=sys.stderr)
+        print(f"[topic_resolve] TopicMapper failed: {e}", file=sys.stderr)
 
     verified: list[str] = []
     for s in raw_subs:
@@ -121,16 +196,17 @@ def resolve_topic(
             if len(verified) >= target_count:
                 break
         else:
-            print(f"[topic_resolve] 剔除幻觉/无效版块:r/{s}", file=sys.stderr)
+            print(f"[topic_resolve] dropping hallucinated/invalid subreddit: r/{s}", file=sys.stderr)
     used_llm_subs = bool(verified)
     if verified:
         subs = verified
     else:
-        # LLM 整组都不可用 → 回退默认(虽然主题不匹配,至少有内容,不要空跑)
-        print("[topic_resolve] 验证后无可用版块,回退默认", file=sys.stderr)
+        # Entire LLM batch unusable → fall back to defaults (topic mismatch is unfortunate, but at
+        # least we have content rather than an empty run).
+        print("[topic_resolve] no usable subreddits after verification, falling back to defaults", file=sys.stderr)
         subs = list(fallback_subreddits)
 
-    # 2) keywords:per-topic 英文相关性词(Reddit 是英文站)
+    # 2) keywords: per-topic English relevance keywords (Reddit is an English site)
     kw_prompt = (
         f"主题:'{keyword}'。请给 15-20 个英文关键词,用于判断 Reddit 帖子是否相关该主题"
         "(词要具体、判别力强;不要 a/the/is 这种泛词;主题相关的实体/动作/概念都可)。\n"
@@ -151,12 +227,17 @@ def resolve_topic(
     if not kws:
         kws = list(fallback_keywords)
 
-    # **分别**标来源(Rex 🔴):决定要不要松闸**只看版块来源**,跟关键词来源解耦——
-    # 否则"LLM 版块成功 + 关键词回退默认 AI 词表"会被误标 fallback,导致非 AI 主题
-    # 退回严闸 + AI 词,把正常帖错杀。
-    return {
+    # **Tag sources separately** (Rex 🔴): whether to relax the gate **depends only on the subreddit
+    # source**, decoupled from the keyword source — otherwise "LLM subreddits OK + keywords fell back
+    # to the default AI list" would be mis-tagged as fallback, pushing a non-AI topic back to strict
+    # gate + AI keywords and killing legitimate posts.
+    result = {
         "subreddits": subs,
         "keywords": kws,
         "subreddits_source": "llm" if used_llm_subs else "fallback",
         "keywords_source": "llm" if used_llm_kws else "fallback",
     }
+    # Both sides LLM-derived → write to cache (next run on the same topic hits and stays consistent)
+    if cache_client is not None and used_llm_subs and used_llm_kws:
+        _cache_set(cache_client, keyword, subs, kws)
+    return result

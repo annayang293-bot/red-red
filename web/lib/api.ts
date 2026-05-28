@@ -1,4 +1,4 @@
-/** API 路由小工具:方法守卫 + 统一错误 JSON。 */
+/** API-route helpers: method guard + uniform error JSON. */
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export function ensureMethod(

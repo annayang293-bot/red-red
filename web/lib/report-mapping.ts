@@ -1,12 +1,13 @@
 /**
- * DB 行 → 前端类型的映射 + 边界校验(收掉 Rex Step5 🟡「`as Report` → runtime 校验」)。
+ * DB row → frontend type mapping + boundary validation (closes Rex Step 5 🟡 "`as Report` → runtime check").
  *
- * 后端来的数据不硬断言成 Report,而是在这里逐行收口:校验必备字段、跳过坏行、
- * 把 posts_archive / report_top20 / starred 的形状统一成 ReportItem。
+ * Backend data is NOT hard-cast to Report; instead it's funneled through here row by row:
+ * required fields validated, bad rows skipped, and posts_archive / report_top20 / starred shapes
+ * unified into ReportItem.
  */
 import { Report, ReportItem } from "./types";
 
-// report_top20.tier 是短名(强/中/弱);映射到前端展示三件套。
+// report_top20.tier is short-name (强/中/弱); map to the frontend's three-piece display tuple.
 const TIER_META: Record<string, { emoji: string; name: string; desc: string }> = {
   强: { emoji: "🔥", name: "强迁移", desc: "直接能做小红书选题" },
   中: { emoji: "🟡", name: "中等迁移", desc: "要加工 / 看人设" },
@@ -14,7 +15,7 @@ const TIER_META: Record<string, { emoji: string; name: string; desc: string }> =
 };
 const TIER_UNKNOWN = { emoji: "⚪", name: "未分档", desc: "" };
 
-// posts_archive 行(只取我们用到的列;PostgREST 返回的其余字段忽略)。
+// posts_archive row (only columns we use; PostgREST returns more, others ignored).
 export type PostRow = {
   post_id: number;
   source: string;
@@ -25,11 +26,11 @@ export type PostRow = {
   raw_metrics: Record<string, unknown> | null;
   ai_review: { tier?: string; comment?: string } | null;
   source_native: Record<string, unknown> | null;
-  run_id: number | null; // 首次入库那次 run(append-only)→ 判"新帖/老帖重现"
+  run_id: number | null; // first-insert run (append-only) → used to judge "new post / post recurring"
 };
 
-// report_top20 + 内联 posts_archive。comment / xhs_title 是 **per-run** 点评(随 run 变),
-// 来自 report_top20 本行,不从 append-only 的 posts_archive.ai_review 读(Rex 🔴1)。
+// report_top20 + inline posts_archive. comment / xhs_title are **per-run** review (changes run to run),
+// taken from this report_top20 row, not from the append-only posts_archive.ai_review (Rex 🔴1).
 export type ReportRow = {
   rank: number;
   tier: string | null;
@@ -39,7 +40,7 @@ export type ReportRow = {
   posts_archive: PostRow | null;
 };
 
-// starred + 内联 posts_archive
+// starred + inline posts_archive
 export type StarredRow = {
   star_id: number;
   post_id: number;
@@ -52,7 +53,7 @@ function toStr(v: unknown): string {
   return String(v);
 }
 
-/** 来源展示名:reddit→r/版块、product_hunt→Product Hunt、其它→原值。 */
+/** Source display name: reddit → r/<sub>, product_hunt → "Product Hunt", others → raw value. */
 function sourceDisplay(post: PostRow): string {
   if (post.source === "reddit") {
     const sub = post.source_native?.["subreddit"];
@@ -63,8 +64,8 @@ function sourceDisplay(post: PostRow): string {
 }
 
 /**
- * 把一条 posts_archive(可带 rank/tier 覆盖)映射成 ReportItem。
- * 缺必备字段(post_id/title/url)→ 返回 null,由调用方跳过(边界校验)。
+ * Map one posts_archive row (optionally with rank/tier overrides) to ReportItem.
+ * Missing required fields (post_id / title / url) → returns null; callers skip (boundary validation).
  */
 export function postToReportItem(
   post: PostRow | null,
@@ -73,23 +74,24 @@ export function postToReportItem(
     tier?: string | null;
     comment?: string | null;
     xhs_title?: string | null;
-    currentRunId?: number; // 传了就算"新帖(首见=本次)/老帖重现(首见在更早 run)"
+    currentRunId?: number; // If passed, computes "new (first-seen=this run) / recurring (first-seen earlier)"
   } = {}
 ): ReportItem | null {
   if (!post || post.post_id == null || !post.title || !post.url) return null;
-  // 新帖 = 这条首次入库就是本次 run;老帖重现 = 之前 run 就见过(append-only:run_id=首见 run)
+  // New = this row's first-insert IS the current run; recurring = seen in an earlier run (append-only: run_id = first-seen run)
   const isNew =
     opts.currentRunId != null && post.run_id != null
       ? post.run_id === opts.currentRunId
       : undefined;
-  // tier 优先用 report_top20.tier(短名);没有则回退 ai_review.tier(全名首字)。
+  // tier preference: report_top20.tier (short name); otherwise fall back to first char of ai_review.tier (full name).
   const shortTier =
     opts.tier ?? (post.ai_review?.tier ? post.ai_review.tier.slice(0, 1) : null);
   const meta = (shortTier && TIER_META[shortTier]) || TIER_UNKNOWN;
   const m = post.raw_metrics || {};
-  // per-run 点评优先(report_top20);仅当没有(如精选库无 run 上下文)才回退首次快照 ai_review。
+  // Prefer per-run comment (report_top20); only fall back to the first-seen snapshot ai_review when
+  // there's no run context (e.g. starred library).
   const comment = opts.comment ?? toStr(post.ai_review?.comment);
-  // 中文标题(真 LLM 才有);没有则用原标题(英文原文)。
+  // Chinese title (only present for real LLM); if absent, fall back to the original (English) title.
   const title = opts.xhs_title || toStr(post.title);
   return {
     id: String(post.post_id),
@@ -108,8 +110,8 @@ export function postToReportItem(
   };
 }
 
-/** report_top20(join posts_archive)行集 → ReportItem[](按 rank,跳过坏行)。
- *  currentRunId:本次报告的 run_id,用于标"新帖/老帖重现"。 */
+/** report_top20 (joined with posts_archive) row set → ReportItem[] (by rank, bad rows skipped).
+ *  currentRunId: this report's run_id, used to tag "new / recurring". */
 export function reportRowsToItems(rows: ReportRow[], currentRunId?: number): ReportItem[] {
   const items: ReportItem[] = [];
   for (const r of rows || []) {
@@ -125,7 +127,7 @@ export function reportRowsToItems(rows: ReportRow[], currentRunId?: number): Rep
   return items;
 }
 
-/** starred(join posts_archive)行集 → ReportItem[](按收藏时间,跳过坏行)。 */
+/** starred (joined with posts_archive) row set → ReportItem[] (by star time, bad rows skipped). */
 export function starredRowsToItems(rows: StarredRow[]): ReportItem[] {
   const items: ReportItem[] = [];
   let rank = 1;
@@ -139,7 +141,7 @@ export function starredRowsToItems(rows: StarredRow[]): ReportItem[] {
   return items;
 }
 
-/** 组装一份 Report(给前端 RunTab/StarredTab 渲染)。 */
+/** Assemble a Report (for RunTab / StarredTab rendering). */
 export function buildReport(date: string, topic: string, items: ReportItem[]): Report {
   return { date, topic, items };
 }

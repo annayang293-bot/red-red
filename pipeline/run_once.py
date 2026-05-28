@@ -1,12 +1,13 @@
-"""单次跑:抓 → 打分 → 三闸门 → 去重 → 标签 → Top-N → AI 点评 → 存 Supabase。
+"""One-shot run: fetch → score → three gates → dedup → tag → Top-N → AI review → write Supabase.
 
-供 Node `POST /api/run` 以子进程方式调用(单次 30–60s,Vercel Fluid 300s 够)。
+Invoked by Node `POST /api/run` as a subprocess (single run 30–60s, fits in Vercel Fluid 300s).
 
-用法: python -m pipeline.run_once "AI 创业" [--triggered-by manual|cron]
-约定: **stdout 只打印一行结果 JSON**(供 Node 解析);pipeline/adapter 的日志全部走 stderr。
-  成功: {"ok":true,"run_id":N,"topic":...,"status":...,"ai_mode":...,"posts":M,"top":K,
-         "failed_sources":[...],"sanity_status":...}
-  失败: {"ok":false,"error":"..."} + 退出码 1。
+Usage: python -m pipeline.run_once "AI startup" [--triggered-by manual|cron]
+Contract: **stdout prints exactly one line of result JSON** (so Node can parse it); pipeline / adapter
+logs all go to stderr.
+  Success: {"ok":true,"run_id":N,"topic":...,"status":...,"ai_mode":...,"posts":M,"top":K,
+            "failed_sources":[...],"sanity_status":...}
+  Failure: {"ok":false,"error":"..."} + exit code 1.
 """
 from __future__ import annotations
 
@@ -24,12 +25,13 @@ from .store import SupabaseStore
 from .supa import _load_dotenv_if_present, get_client
 from .topic_resolve import resolve_topic
 
-# AI 创业相关的默认版块——LLM 主题映射失败时回退用。
+# Default subreddits for AI-startup-style topics — used as fallback when LLM topic mapping fails.
 DEFAULT_SUBREDDITS = ["OpenAI", "SaaS", "Entrepreneur", "startups", "artificial", "indiehackers"]
 
 
 def build_sources(cfg: dict, subreddits: list[str]) -> list:
-    """构建真实数据源(Reddit + PH)。subreddits 由 resolve_topic 给(LLM 按主题推荐;失败回退默认)。"""
+    """Build real data sources (Reddit + PH). subreddits is supplied by resolve_topic (LLM recommends per topic;
+    falls back to defaults on failure)."""
     reddit_cfg = dict(cfg.get("reddit") or {})
     reddit_cfg.setdefault("auth_mode", "public")
     reddit_cfg["subreddits"] = subreddits
@@ -40,28 +42,37 @@ def build_sources(cfg: dict, subreddits: list[str]) -> list:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="跑一次主线并落库 Supabase")
-    ap.add_argument("topic", help="主题词,如 'AI 创业'")
+    ap = argparse.ArgumentParser(description="Run the pipeline once and persist to Supabase")
+    ap.add_argument("topic", help="Topic keyword, e.g. 'AI startup'")
     ap.add_argument("--triggered-by", default="manual", choices=["manual", "cron"])
     args = ap.parse_args(argv)
 
     cfg = DEFAULT_CONFIG
-    # 先加载 .env(Reddit UA / OpenAI key 等 adapter 在 run_pipeline 期间就要读;
-    # get_client 也会加载,但那在 pipeline 之后,太晚)。
+    # Load .env first (Reddit UA / OpenAI key etc. are read by adapters during run_pipeline;
+    # get_client also loads it, but that happens after the pipeline runs — too late).
     _load_dotenv_if_present()
     try:
-        # pipeline / adapter 内部有 print 到 stdout 的日志 → 重定向到 stderr,
-        # 保证真 stdout 只有最后一行结果 JSON(Node 才好解析)。
+        # pipeline / adapter internals print to stdout → redirect to stderr so that real stdout
+        # contains only the final JSON line (so Node can parse it cleanly).
         with contextlib.redirect_stdout(sys.stderr):
-            # 主题 → 该抓哪些 subreddits + per-topic 相关性词(LLM 自动算;失败各自回退默认)
-            mapping = resolve_topic(args.topic, DEFAULT_SUBREDDITS, cfg["keywords"])
-            print(f"[run_once] 主题映射 subs={mapping['subreddits_source']}/"
+            # Share a single supabase client (cache read/write + later save all use it)
+            sb_client = get_client()
+            # Topic → which subreddits to fetch + per-topic relevance keywords (LLM-derived; each falls
+            # back to defaults on failure). Passing cache_client → if topics_cache hits (no TTL, permanent
+            # since 2026-05-28), reuse directly so the same topic stays stable across runs.
+            mapping = resolve_topic(
+                args.topic, DEFAULT_SUBREDDITS, cfg["keywords"],
+                cache_client=sb_client,
+            )
+            print(f"[run_once] topic mapping subs={mapping['subreddits_source']}/"
                   f"kws={mapping['keywords_source']} "
                   f"| subreddits={mapping['subreddits']} "
                   f"| keywords({len(mapping['keywords'])})={mapping['keywords'][:6]}…")
-            # **只看版块来源**决定要不要松闸(Rex 🔴):LLM 选的版块本身就是话题过滤,
-            # 关键词闸放宽(否则"Taylor Swift"这种正经名人帖会因标题没"celebrity"字面被错杀)。
-            # 关键词回退到默认 AI 词表 ≠ 版块回退——这种情况仍应松闸,跟关键词来源解耦。
+            # **Only the subreddit source** decides whether to relax the gate (Rex 🔴): LLM-chosen
+            # subreddits are themselves a topic filter, so the keyword gate is relaxed (otherwise
+            # legitimate celebrity posts like "Taylor Swift" would be killed by titles lacking a literal
+            # "celebrity" token). Keyword fallback to the default AI list ≠ subreddit fallback — that
+            # case should still be relaxed, so we decouple the two source signals.
             run_cfg = cfg
             if mapping["subreddits_source"] == "llm":
                 run_cfg = {**cfg, "filter": {**cfg["filter"], "relevance_threshold": 0.0}}
@@ -70,6 +81,8 @@ def main(argv=None) -> int:
                 args.topic, sources, cfg=run_cfg, keywords=mapping["keywords"],
                 review_fn=select_review_fn(), triggered_by=args.triggered_by,
             )
+            # Attach the full LLM-chosen subreddit list to res so store writes it into runs.subreddits
+            res.subreddits = list(mapping["subreddits"])
             run_id = SupabaseStore(get_client()).save(res)
         out = {
             "ok": True, "run_id": run_id, "topic": res.topic,
@@ -82,7 +95,7 @@ def main(argv=None) -> int:
         }
         print(json.dumps(out, ensure_ascii=False))
         return 0
-    except Exception as e:  # noqa: BLE001 — 把失败收口成 JSON 给 Node,别让栈直接喷到 stdout
+    except Exception as e:  # noqa: BLE001 — funnel failures into JSON for Node; don't let stacks spew onto stdout
         print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
         return 1
 

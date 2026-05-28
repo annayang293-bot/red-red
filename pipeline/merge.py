@@ -1,8 +1,10 @@
-"""去重 / 自动标签 / 配额选择 —— 从 legacy 移植(post-scoring 编排,不改打分)。
+"""Dedup / auto-tagging / quota selection — ported from legacy (post-scoring orchestration, scoring untouched).
 
-- dedup_items: 跨源按 dedup_key(规范化 URL)合并,保留 hot_score 最高;平局按源优先级。
-- enrich_tags: 原生标签 + 命中的 relevance 关键词,去重,上限 max_tags。
-- select_ranked: 来源配额(如 PH=2,靠配额露出,配额内按 recency)+ 全局 hot 补满。
+- dedup_items: cross-source merge by dedup_key (canonical URL), keeping the highest hot_score;
+  ties broken by source priority.
+- enrich_tags: native tags + matching relevance keywords, de-duplicated, capped at max_tags.
+- select_ranked: source quotas (e.g. PH=2, the quota guarantees the source surfaces; within a quota,
+  pick by recency) + global hot top-up to reach the limit.
 """
 from __future__ import annotations
 
@@ -65,7 +67,8 @@ def _recency_key(it):
 
 
 def select_ranked(items, cfg, limit, quota_pool=None):
-    """展示层 Top-N 选择:来源配额优先(零互动源靠 quota 保底露出,按 recency)+ 全局 hot 补满。"""
+    """Presentation-layer Top-N: source quotas first (zero-engagement sources get a quota floor,
+    sorted by recency within their quota) + global hot top-up to reach the limit."""
     base = sorted(items, key=lambda x: x.hot_score, reverse=True)
     quotas = _mcfg(cfg).get("source_quota", {}) or {}
     extra = quota_pool or []

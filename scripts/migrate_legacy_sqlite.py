@@ -1,15 +1,16 @@
-"""一次性迁移:把 legacy system1-scraper/data/system1.db 的 hotspots 搬进 Supabase。
+"""One-shot migration: lift hotspots from the legacy system1-scraper/data/system1.db into Supabase.
 
-策略:按 DATE(captured_at) 分天 → 每天一条 runs(triggered_by=cron, person=legacy_import) →
-每条 hotspot 进 posts_archive(append-only,native_id 从 URL 抽);每天 hot_score 前 20 进
-report_top20,tier 按 heuristic 分位(top 34%=强 / 中 40% / 末 26%=弱)。
+Strategy: group by DATE(captured_at) → one runs row per day (triggered_by=cron,
+person=legacy_import) → each hotspot lands in posts_archive (append-only; native_id extracted from URL);
+each day's top 20 by hot_score lands in report_top20, tier assigned heuristically by percentile
+(top 34% = strong / middle 40% = medium / bottom 26% = weak).
 
-保守(Rex 数据层精神):
-- posts_archive 用 (source, source_native_id) UNIQUE 防重 —— 先查已存在,只 insert 新的。
-- 失败/不可识别原生 ID 的行(无法从 url 提取)→ 跳过 + 记 skipped。
-- legacy SQLite 没存 AI 点评 → ai_review/comment/xhs_title 全 NULL,ai_mode='heuristic'。
+Conservative (in the spirit of Rex's data-layer review):
+- posts_archive uses (source, source_native_id) UNIQUE to prevent duplicates — look up existing first, only insert new.
+- Failed / unidentifiable native-id rows (can't extract from URL) → skipped + counted.
+- Legacy SQLite has no AI critique → ai_review / comment / xhs_title all NULL, ai_mode='heuristic'.
 
-跑法: python3 system1-app/scripts/migrate_legacy_sqlite.py [--dry-run]
+Run: python3 system1-app/scripts/migrate_legacy_sqlite.py [--dry-run]
 """
 from __future__ import annotations
 
@@ -28,26 +29,26 @@ sys.path.insert(0, str(REPO / "system1-app"))
 from pipeline.supa import get_client  # noqa: E402
 
 LEGACY_DB = REPO / "system1-scraper" / "data" / "system1.db"
-TIER_DB = {"强": "强", "中": "中", "弱": "弱"}   # report_top20.tier CHECK 短名
+TIER_DB = {"强": "强", "中": "中", "弱": "弱"}   # report_top20.tier CHECK short names
 
-# Reddit url → 帖子 native id 提取(/comments/<id>/...)
+# Reddit url → post native id extraction (/comments/<id>/...)
 _REDDIT_ID_RE = re.compile(r"/comments/([a-z0-9]+)/", re.I)
 
 
 def extract_native_id(source: str, url: str | None, source_native: dict | None) -> str | None:
-    """从 url 或 source_native 抽 native_id。Reddit 走 /comments/<id>/。"""
+    """Extract native_id from the url or source_native. Reddit uses /comments/<id>/."""
     if not url:
         return None
     if source == "reddit":
         m = _REDDIT_ID_RE.search(url)
         if m:
             return m.group(1)
-        # 兜底:source_native.permalink
+        # Fallback: source_native.permalink
         perm = (source_native or {}).get("permalink") or ""
         m = _REDDIT_ID_RE.search(perm)
         return m.group(1) if m else None
     if source == "product_hunt":
-        # PH url 模式 /products/<slug>/ 或 /posts/<slug>;legacy SQLite 实际无 PH,留兜底
+        # PH url patterns /products/<slug>/ or /posts/<slug>; legacy SQLite has no PH in practice, kept as fallback.
         for prefix in ("/products/", "/posts/"):
             i = url.find(prefix)
             if i >= 0:
@@ -59,7 +60,7 @@ def extract_native_id(source: str, url: str | None, source_native: dict | None) 
 
 
 def heuristic_tier_short(rank_in_day: int, n_in_day: int) -> str:
-    """heuristic_review 同样的分位逻辑,返回 report_top20 的短名 (强/中/弱)。"""
+    """Same percentile logic as heuristic_review, returning report_top20's short names (强/中/弱)."""
     frac = rank_in_day / max(n_in_day, 1)
     if frac < 0.34:
         return "强"
@@ -77,20 +78,20 @@ def _parse_json(s):
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true", help="只打印计划,不写库")
+    ap.add_argument("--dry-run", action="store_true", help="Print the plan only, don't write to DB")
     args = ap.parse_args(argv)
 
     if not LEGACY_DB.exists():
-        print(f"❌ legacy DB 不存在: {LEGACY_DB}", file=sys.stderr)
+        print(f"❌ legacy DB not found: {LEGACY_DB}", file=sys.stderr)
         return 1
 
-    # ---- 读 legacy ----
+    # ---- Read legacy ----
     conn = sqlite3.connect(str(LEGACY_DB))
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM hotspots ORDER BY captured_at").fetchall()
     print(f"legacy: {len(rows)} hotspots")
 
-    # 按 day(YYYY-MM-DD) 分组
+    # Group by day (YYYY-MM-DD)
     by_day: dict[str, list] = defaultdict(list)
     skipped_no_id = 0
     for r in rows:
@@ -104,28 +105,28 @@ def main(argv=None) -> int:
                             "raw_metrics": _parse_json(r["raw_metrics"]),
                             "tags": _parse_json(r["tags"])})
     if skipped_no_id:
-        print(f"⚠️ {skipped_no_id} 行没能抽出 native_id(跳过)")
+        print(f"⚠️ {skipped_no_id} rows could not yield a native_id (skipped)")
     days = sorted(by_day.keys())
-    print(f"分组到 {len(days)} 天: {days[0]} → {days[-1]}")
+    print(f"grouped into {len(days)} days: {days[0]} → {days[-1]}")
     for d in days:
         print(f"  {d}: {len(by_day[d])} posts")
 
     if args.dry_run:
-        print("\n--dry-run,不写库,退出")
+        print("\n--dry-run, not writing, exiting")
         return 0
 
-    # ---- 连 Supabase ----
+    # ---- Connect to Supabase ----
     c = get_client()
-    # legacy 数据归属 "AI 创业" 主题(legacy 一直在跑这个);它现在可能 active 也可能 archived 都行
+    # Legacy data is attributed to the "AI 创业" topic (legacy has been running it); active or archived is fine here.
     target = c.table("topics").select("topic_id,status").eq("keyword", "AI 创业") \
               .order("started_at", desc=True).limit(1).execute().data
     if not target:
-        print("❌ 找不到 keyword='AI 创业' 的 topic(需要先在 UI 里跑过或建过)", file=sys.stderr)
+        print("❌ no topic with keyword='AI 创业' found (need to run/create one in the UI first)", file=sys.stderr)
         return 1
     topic_id = target[0]["topic_id"]
-    print(f"legacy 数据归属 topic 'AI 创业' (topic_id={topic_id},status={target[0]['status']})")
+    print(f"legacy data attributed to topic 'AI 创业' (topic_id={topic_id}, status={target[0]['status']})")
 
-    # 既有 posts(避免重插):按本次要写的 native_id 集合查
+    # Existing posts (avoid re-inserting): query against this run's set of native_ids
     all_nids = [p["native_id"] for d in days for p in by_day[d]]
     existing: dict[tuple, int] = {}
     BATCH = 200
@@ -135,16 +136,16 @@ def main(argv=None) -> int:
               .in_("source_native_id", chunk).execute().data
         for r in ex:
             existing[(r["source"], r["source_native_id"])] = r["post_id"]
-    print(f"已在库的相关 posts: {len(existing)}(insert 时跳过这些)")
+    print(f"existing related posts in DB: {len(existing)} (will be skipped on insert)")
 
-    # ---- 按天导入 ----
+    # ---- Import day by day ----
     total_runs = total_new_posts = total_report = 0
     for day in days:
         posts = by_day[day]
-        # 当天按 hot_score 降序
+        # Within a day, sort by hot_score descending
         posts.sort(key=lambda p: float(p["row"]["hot_score"] or 0), reverse=True)
         n = len(posts)
-        # 用当天最早 captured_at 当 started_at(否则 06:00 LA 也行)
+        # Use the day's earliest captured_at as started_at (otherwise 06:00 LA also works)
         started_at = posts[-1]["row"]["captured_at"] or f"{day}T13:00:00+00:00"  # 06:00 LA = 13:00 UTC
 
         run_row = {
@@ -153,14 +154,14 @@ def main(argv=None) -> int:
             "status": "completed",
             "started_at": started_at, "finished_at": started_at,
             "posts_count": n, "top20_count": min(20, n),
-            "ai_mode": "heuristic",                 # legacy 未存 AI per-post
+            "ai_mode": "heuristic",                 # legacy doesn't have per-post AI
             "sanity_status": "OK",
             "config_fingerprint": f"legacy_import_{day}",
         }
         run_id = c.table("runs").insert(run_row).execute().data[0]["run_id"]
         total_runs += 1
 
-        # 准备本天的 posts_archive 插入(只插新的)
+        # Prepare this day's posts_archive inserts (new only)
         key_to_pid: dict[tuple, int] = {}
         new_rows = []
         for p in posts:
@@ -190,14 +191,14 @@ def main(argv=None) -> int:
                 existing[k] = s["post_id"]
             total_new_posts += len(new_rows)
 
-        # report_top20:取当天 top 20(按 hot_score 已降序)
+        # report_top20: take top 20 of the day (posts already sorted by hot_score desc)
         top = posts[:20]
         rep_rows = []
         for i, p in enumerate(top, start=1):
             key = (p["row"]["source"], p["native_id"])
             pid = key_to_pid.get(key)
             if pid is None:
-                continue   # 防御性
+                continue   # Defensive
             rep_rows.append({
                 "run_id": run_id, "post_id": pid, "rank": i,
                 "tier": TIER_DB[heuristic_tier_short(i - 1, len(top))],

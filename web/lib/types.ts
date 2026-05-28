@@ -1,6 +1,6 @@
 export type ReportItem = {
-  id: string;   // 稳定身份(收藏/React key 用)= posts_archive.post_id 的字符串形式
-  rank: number; // 仅本次报告里的排序位置,不是身份
+  id: string;   // Stable identity (used for star / React key) = string form of posts_archive.post_id
+  rank: number; // Sort position within this report only — NOT the identity
   title: string;
   tier_emoji: string; // 🔥 | 🟡 | ⚪
   tier_name: string;  // 强迁移 | 中等迁移 | 弱迁移
@@ -11,7 +11,7 @@ export type ReportItem = {
   comments: string;
   url: string;
   comment: string;
-  is_new?: boolean; // true=本次新帖;false=老帖重现;undefined=无 run 上下文(如精选库)
+  is_new?: boolean; // true = new this run; false = post recurring; undefined = no run context (e.g. starred library)
 };
 
 export type Report = {
@@ -22,7 +22,7 @@ export type Report = {
 
 export type TabKey = "run" | "star" | "history" | "set";
 
-// 运行历史(来自 /api/runs)—— 用于报告历史下拉
+// Run history (from /api/runs) — for the report history dropdown
 export type RunSummary = {
   run_id: number;
   topic_keyword: string;
@@ -32,7 +32,7 @@ export type RunSummary = {
   ai_mode: string | null;
 };
 
-// 档 → 颜色 class(暖色调)
+// Tier → color class (warm palette)
 export const tierColor: Record<string, string> = {
   "🔥": "text-strong",
   "🟡": "text-mid",
