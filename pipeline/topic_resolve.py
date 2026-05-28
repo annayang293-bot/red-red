@@ -56,21 +56,54 @@ def _openai_json(prompt: str) -> Optional[dict]:
         return None
 
 
+# Internal: cache the LLM's classification of the most recent _llm_subreddits call so resolve_topic
+# can log it once. Single-threaded pipeline; no concurrent-call concern.
+_last_intent: dict[str, str] = {}
+
+
 def _llm_subreddits(keyword: str) -> list[str]:
-    """LLM suggests subreddits for the topic (used by TopicMapper's llm_suggest_fn). Ask for 10 → verification trims down."""
-    # Prompt body stays in Chinese: instructions are clearer to the model, and the requested output is name strings.
-    # Anna 2026-05-28: explicit "big / active / well-known" + a subscriber floor so the LLM stops
-    # picking 2-3k niche subs (r/AI_Entrepreneur) over the obvious leaders (r/OpenAI 2.8M).
+    """LLM suggests subreddits for the topic (used by TopicMapper's llm_suggest_fn). Ask for 10 → verification trims down.
+
+    Anna 2026-05-28 prompt v2 = two improvements stacked:
+    - **Forced classification** (option 2): the LLM must first commit to a content-type category
+      (A创业 / B技术 / C工具 / D新闻 / E创作 / F教育) before it lists subreddits. This blocks the
+      "AI 创业 → MachineLearning" failure mode, where the LLM defaulted to AI-tech subs because it
+      treated the modifier 'AI' as the head.
+    - **Few-shot positive+negative examples** (option 1): explicit "AI 创业 → ✅ SaaS / ❌
+      MachineLearning" pairs, so the LLM sees the head-final pattern (in Chinese, "X Y" the head is Y).
+    """
     prompt = (
-        f"主题:'{keyword}'。请推荐 10 个**真实存在、大型、活跃、该主题最公认**的英文 subreddit 名"
-        "(不带 r/ 前缀;只用字母/数字/下划线;不要广义大众版块如 funny/news/pics)。\n"
-        "**质量要求**:优先选**订阅人数 ≥10 万**、近期有活跃帖子、该主题领域**最有公信力**的版块"
-        "(例如 AI 类要给 r/OpenAI、r/MachineLearning、r/artificial 这种公认大版,不是 r/AI_xxx 那种几千订阅的小众版)。"
-        "订阅人数 <10 万的版块会被验证步骤剔除,浪费名额。\n"
-        "**重要:只给真实存在的版块**——宁可少给也别瞎编。\n"
-        '只输出 JSON:{"subreddits":["name1","name2",...]}'
+        f"你在帮一个小红书博主从英文 subreddit 找选题灵感。主题: '{keyword}'\n\n"
+        "请按步骤思考:\n\n"
+        "【第 1 步】判断这个主题的「核心内容形态」(从下列选一个或 mixed):\n"
+        "  A. 创业 / 商业 / SaaS / 独立开发 / 副业 / 增长\n"
+        "  B. 技术学习 / 论文 / 模型训练 / 算法\n"
+        "  C. 工具使用 / 产品评测 / 上手教程\n"
+        "  D. 文化新闻 / 行业八卦 / 趋势讨论\n"
+        "  E. 创作 / 写作 / 设计 / 内容\n"
+        "  F. 教育 / 职业 / 学习路径\n"
+        "  mixed (多种)\n\n"
+        "⚠️ **复合主题 X Y(中文「修饰+中心」结构)的核心通常在后半截(目标活动),前半截是修饰词**。看几个对照:\n"
+        "  - 「AI 创业」核心=创业 → A(✅ SaaS / Entrepreneur / indiehackers;❌ MachineLearning / DeepLearning)\n"
+        "  - 「AI 编程」核心=编程 → C 或 B(✅ programming / learnprogramming;❌ MachineLearning)\n"
+        "  - 「AI 写作」核心=写作 → E(✅ writing / copywriting;❌ MachineLearning)\n"
+        "  - 「ChatGPT 副业」核心=副业 → A(✅ Entrepreneur / sidehustle;❌ OpenAI)\n"
+        "  - 「Claude 教程」核心=教程 → C(✅ ChatGPTPromptGenius / ArtificialIntelligence;❌ MachineLearning)\n\n"
+        "【第 2 步】基于第 1 步判断的核心形态,推荐 **10 个真实存在、大型、活跃、聚焦你判定形态**的英文 subreddit。\n\n"
+        "要求:\n"
+        "- 不带 r/ 前缀;只用字母/数字/下划线\n"
+        "- 不要广义大众版块如 funny / news / pics\n"
+        "- 订阅 <10 万的会被验证步骤剔除,浪费名额\n"
+        "- 只给真实存在的版块——宁可少给也别瞎编\n"
+        "- **不要选修饰词那边的版块**(例如核心是创业,就别给 MachineLearning)\n\n"
+        '只输出 JSON:{"core_intent": "A|B|C|D|E|F|mixed", "core_noun": "...", "subreddits": ["name1", ...]}'
     )
     out = _openai_json(prompt) or {}
+    # Stash the classification so resolve_topic can surface it in logs/output.
+    intent = (out.get("core_intent") or "").strip().upper()
+    noun = (out.get("core_noun") or "").strip()
+    if intent:
+        _last_intent[keyword] = f"{intent} (core={noun!r})" if noun else intent
     return [
         s.strip().lstrip("r/").lstrip("/")
         for s in (out.get("subreddits") or [])
@@ -216,6 +249,14 @@ def resolve_topic(
         raw_subs = list(result.subreddit_names)
     except Exception as e:  # noqa: BLE001
         print(f"[topic_resolve] TopicMapper failed: {e}", file=sys.stderr)
+
+    # Surface the LLM's classification so the operator can sanity-check that the topic was understood
+    # correctly (Anna 2026-05-28: "I want to see what core form LLM judged"). If the intent is wrong
+    # (e.g. LLM tagged "AI 创业" as B instead of A), the chosen subs will be wrong too — better to
+    # see this early than debug subreddit-by-subreddit.
+    intent = _last_intent.pop(keyword, None)
+    if intent:
+        print(f"[topic_resolve] LLM classified '{keyword}' as content type: {intent}", file=sys.stderr)
 
     verified: list[str] = []
     for s in raw_subs:
