@@ -5,8 +5,10 @@ Run: python3 system1-app/pipeline/tests/test_topic_resolve.py
 """
 from __future__ import annotations
 
+import io
 import os
 import sys
+from contextlib import redirect_stderr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -81,6 +83,90 @@ def test_partial_404_keeps_verified_no_fallback():
         tr._llm_subreddits, tr._openai_json, tr._verify_subreddit = orig_llm, orig_openai, orig_verify
         _restore_key(saved)
     print("✅ test_partial_404_keeps_verified_no_fallback")
+
+
+class _FakeResp:
+    """Minimal fake of requests.Response for _verify_subreddit tests."""
+
+    def __init__(self, status_code: int, data: dict | None = None):
+        self.status_code = status_code
+        self._data = data or {}
+
+    def json(self):
+        return {"data": self._data}
+
+
+def test_verify_subreddit_drops_small_subscribers():
+    """🐞 (Anna 2026-05-28): r/X with subscribers < MIN_SUBSCRIBERS → drop, even if it exists.
+    Prevents LLM picks like r/AI_Entrepreneur (2k subs) from beating r/OpenAI (2.8M)."""
+    import requests
+    orig_get = requests.get
+    fake_subs = {"big": 2_000_000, "tiny": 5_000}
+    requests.get = lambda url, **kw: _FakeResp(200, {"subscribers": fake_subs[url.split("/r/")[1].split("/")[0]]})
+    try:
+        assert tr._verify_subreddit("big") is True
+        assert tr._verify_subreddit("tiny") is False, "small sub must be dropped"
+        # explicit threshold override
+        assert tr._verify_subreddit("tiny", min_subscribers=1000) is True, "with lower threshold, small sub passes"
+    finally:
+        requests.get = orig_get
+    print("✅ test_verify_subreddit_drops_small_subscribers")
+
+
+def test_verify_subreddit_keeps_when_subscribers_unknown():
+    """🐞 about.json returns 200 but no `subscribers` field (rare but possible) → keep (fail-safe;
+    we don't have enough info to drop, the main fetch will catch true failures)."""
+    import requests
+    orig_get = requests.get
+    requests.get = lambda url, **kw: _FakeResp(200, {})  # No subscribers field
+    try:
+        assert tr._verify_subreddit("noinfo") is True
+    finally:
+        requests.get = orig_get
+    print("✅ test_verify_subreddit_keeps_when_subscribers_unknown")
+
+
+def test_verify_subreddit_drops_private_restricted():
+    """🐞 banned / private / restricted = inaccessible → drop (the main fetch would fail anyway)."""
+    import requests
+    orig_get = requests.get
+    cases = [("b", "banned"), ("p", "private"), ("r", "restricted")]
+    for name, typ in cases:
+        def fake(url, _typ=typ, **kw):
+            return _FakeResp(200, {"subreddit_type": _typ, "subscribers": 5_000_000})
+        requests.get = fake
+        try:
+            assert tr._verify_subreddit(name) is False, f"{typ} subreddit must be dropped"
+        finally:
+            requests.get = orig_get
+    print("✅ test_verify_subreddit_drops_private_restricted")
+
+
+def test_quality_count_below_threshold_warns_keeps_results():
+    """🐞 (Anna 2026-05-28): if quality verification leaves <MIN_QUALITY_COUNT subs, surface a
+    loud warning to stderr — but DO use whatever we got (don't silently fall back to AI defaults
+    for a non-AI topic; the operator should manually curate topics_cache instead)."""
+    saved = _pop_key()
+    os.environ["OPENAI_API_KEY"] = "dummy"
+    orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
+    tr._llm_subreddits = lambda kw: ["only1", "only2", "tiny1", "tiny2"]
+    tr._openai_json = lambda prompt: {"keywords": ["kw1"]}
+    survives = {"only1", "only2"}  # 2 quality, others dropped — below MIN_QUALITY_COUNT=4
+    tr._verify_subreddit = lambda n: n in survives
+    try:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            r = tr.resolve_topic("actor", ["AI_DEFAULT_S"], ["fb_k"])
+        log = err.getvalue()
+        assert "topic mapping incomplete" in log, f"warning not surfaced: {log!r}"
+        assert "only 2" in log
+        assert set(r["subreddits"]) == survives, "must keep the 2 verified, not fall back to AI defaults"
+        assert "AI_DEFAULT_S" not in r["subreddits"], "must NOT pollute non-AI topic with AI fallback"
+        assert r["subreddits_source"] == "llm"
+    finally:
+        tr._llm_subreddits, tr._openai_json, tr._verify_subreddit = orig_llm, orig_openai, orig_verify
+        _restore_key(saved)
+    print("✅ test_quality_count_below_threshold_warns_keeps_results")
 
 
 if __name__ == "__main__":

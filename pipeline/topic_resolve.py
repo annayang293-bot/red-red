@@ -17,6 +17,14 @@ from .topic_mapping import TopicMapper
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4o-mini"
 
+# Quality floor for LLM-suggested subreddits (Anna 2026-05-28: don't let LLM pick a 2k-sub niche
+# over r/OpenAI 2.8M). Sub size correlates with engagement / topical authority. 100k is the
+# threshold where AI/startup subs split into "big and well-known" vs "small niche".
+MIN_SUBSCRIBERS = 100_000
+# Below this many verified, high-quality subs, surface a loud warning (the topic mapping is
+# probably incomplete and the run will produce thin / lopsided results).
+MIN_QUALITY_COUNT = 4
+
 
 def _openai_json(prompt: str) -> Optional[dict]:
     """Call the LLM and parse JSON. Missing key / any failure → None (caller falls back).
@@ -51,10 +59,15 @@ def _openai_json(prompt: str) -> Optional[dict]:
 def _llm_subreddits(keyword: str) -> list[str]:
     """LLM suggests subreddits for the topic (used by TopicMapper's llm_suggest_fn). Ask for 10 → verification trims down."""
     # Prompt body stays in Chinese: instructions are clearer to the model, and the requested output is name strings.
+    # Anna 2026-05-28: explicit "big / active / well-known" + a subscriber floor so the LLM stops
+    # picking 2-3k niche subs (r/AI_Entrepreneur) over the obvious leaders (r/OpenAI 2.8M).
     prompt = (
-        f"主题:'{keyword}'。请推荐 10 个**真实存在、活跃、聚焦该主题**的英文 subreddit 名"
+        f"主题:'{keyword}'。请推荐 10 个**真实存在、大型、活跃、该主题最公认**的英文 subreddit 名"
         "(不带 r/ 前缀;只用字母/数字/下划线;不要广义大众版块如 funny/news/pics)。\n"
-        "**重要:只给真实存在的版块**——宁可少给也别瞎编(瞎编的会被验证步骤剔除,浪费名额)。\n"
+        "**质量要求**:优先选**订阅人数 ≥10 万**、近期有活跃帖子、该主题领域**最有公信力**的版块"
+        "(例如 AI 类要给 r/OpenAI、r/MachineLearning、r/artificial 这种公认大版,不是 r/AI_xxx 那种几千订阅的小众版)。"
+        "订阅人数 <10 万的版块会被验证步骤剔除,浪费名额。\n"
+        "**重要:只给真实存在的版块**——宁可少给也别瞎编。\n"
         '只输出 JSON:{"subreddits":["name1","name2",...]}'
     )
     out = _openai_json(prompt) or {}
@@ -65,9 +78,15 @@ def _llm_subreddits(keyword: str) -> list[str]:
     ]
 
 
-def _verify_subreddit(name: str) -> bool:
-    """Ping `r/<name>/about.json` to verify existence. 404 = confirmed nonexistent (LLM hallucination) → drop;
-    anything else (200/403/5xx/timeout) = can't confirm absence → keep (let the main fetch retry).
+def _verify_subreddit(name: str, *, min_subscribers: int = MIN_SUBSCRIBERS) -> bool:
+    """Ping `r/<name>/about.json` to verify existence + quality.
+
+    - 404 = confirmed nonexistent (LLM hallucination) → drop.
+    - 200 + banned/private/restricted → drop.
+    - 200 + subscribers < min_subscribers → drop (Anna 2026-05-28 quality floor;
+      keeps LLM from picking tiny niche subs).
+    - Anything else (200 + healthy + ≥ floor, OR 403/5xx/timeout where we couldn't read subscribers)
+      → keep (the main fetch will catch true failures).
     """
     try:
         import requests
@@ -80,7 +99,16 @@ def _verify_subreddit(name: str) -> bool:
             return False
         if r.status_code == 200:
             data = r.json().get("data", {}) or {}
-            if data.get("subreddit_type") == "banned":
+            if data.get("subreddit_type") in ("banned", "private", "restricted"):
+                return False
+            # Subscriber-count gate. If the field is missing/None we don't have enough info to
+            # discriminate → keep (fail-safe; the main fetch will discover dead subs).
+            subs = data.get("subscribers")
+            if isinstance(subs, int) and subs < min_subscribers:
+                print(
+                    f"[topic_resolve] r/{name} subscribers={subs:,} < {min_subscribers:,} → drop (quality floor)",
+                    file=sys.stderr,
+                )
                 return False
         return True
     except Exception:
@@ -196,13 +224,25 @@ def resolve_topic(
             if len(verified) >= target_count:
                 break
         else:
-            print(f"[topic_resolve] dropping hallucinated/invalid subreddit: r/{s}", file=sys.stderr)
+            print(f"[topic_resolve] dropping hallucinated/invalid/tiny subreddit: r/{s}", file=sys.stderr)
     used_llm_subs = bool(verified)
     if verified:
+        # Quality-floor warning (Anna 2026-05-28): when too few quality subs survive verification,
+        # the run will produce thin / lopsided content. We do NOT silently fall back to defaults
+        # (the defaults are AI-themed; using them for an "actor" topic would mis-tag the run).
+        # Instead, surface the gap loudly so the operator manually curates topics_cache.
+        if len(verified) < MIN_QUALITY_COUNT:
+            print(
+                f"[topic_resolve] ⚠️ topic mapping incomplete: only {len(verified)} quality subreddits found "
+                f"(< {MIN_QUALITY_COUNT}); content will be thin. Consider manually setting topics_cache.subreddits "
+                f"for keyword={keyword!r}.",
+                file=sys.stderr,
+            )
         subs = verified
     else:
         # Entire LLM batch unusable → fall back to defaults (topic mismatch is unfortunate, but at
-        # least we have content rather than an empty run).
+        # least we have content rather than an empty run). Note: fallback_subreddits is the caller's
+        # responsibility — pass an empty list if you want a hard "no content" failure for an off-domain topic.
         print("[topic_resolve] no usable subreddits after verification, falling back to defaults", file=sys.stderr)
         subs = list(fallback_subreddits)
 
