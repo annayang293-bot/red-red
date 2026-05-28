@@ -17,7 +17,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const { data, error } = await sb
         .from("topics")
-        .select("topic_id, keyword, status, started_at")
+        .select("topic_id, keyword, status, started_at, mapping_hint")
         .order("status", { ascending: true }) // active < archived (alphabetical)
         .order("started_at", { ascending: false });
       if (error) throw error;
@@ -61,9 +61,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // atomic, never leaves 0 active).
   const keyword = String(req.body?.keyword ?? "").trim();
   if (!keyword) return res.status(400).json({ error: "missing_keyword" });
+  // Optional mapping hint (option 3, Anna 2026-05-28): user-supplied guidance for the LLM's
+  // subreddit-mapping pass. Persisted on the topic row so subsequent runs see it.
+  const rawHint = req.body?.hint;
+  const hint = typeof rawHint === "string" ? rawHint.trim() : "";
   try {
     const { data, error } = await sb.rpc("switch_active_topic", { p_keyword: keyword });
     if (error) throw error;
+    // After the switch lands, write the hint (or null to clear) onto the topic. Failure here
+    // doesn't roll back the switch — switch is the critical path; hint is best-effort.
+    if (data && typeof data === "object" && "topic_id" in data) {
+      const topicId = (data as { topic_id: number }).topic_id;
+      const hintToWrite = hint || null;
+      const { error: hintErr } = await sb
+        .from("topics").update({ mapping_hint: hintToWrite }).eq("topic_id", topicId);
+      if (hintErr) {
+        // Don't fail the request — switch already succeeded; just surface the hint write failure.
+        console.error("[api/topics] hint write failed:", hintErr.message);
+      }
+    }
     res.status(200).json({ ok: true, topic: data });
   } catch (e) {
     failError(res, e);

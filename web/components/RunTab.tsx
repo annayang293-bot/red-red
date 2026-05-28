@@ -25,7 +25,7 @@ export default function RunTab({
   starred: Set<string>;
   onToggle: (id: string) => void;
   onRun: (topic: string) => void;
-  onSwitchTopic: (keyword: string) => void;
+  onSwitchTopic: (keyword: string, hint?: string) => void;
   onDeleteTopic: (topicId: number, keyword: string) => void;
   onBackToActiveLatest: () => void;
   running: boolean;

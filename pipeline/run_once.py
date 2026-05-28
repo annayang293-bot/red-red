@@ -57,12 +57,32 @@ def main(argv=None) -> int:
         with contextlib.redirect_stdout(sys.stderr):
             # Share a single supabase client (cache read/write + later save all use it)
             sb_client = get_client()
+            # Read the user-supplied mapping_hint (option 3) from the active topic, if any. Hint
+            # only matters on cache miss — on hit, the cached subreddits already reflect the prior
+            # hint. Empty/missing hint = no extra steering.
+            hint = None
+            try:
+                trow = (
+                    sb_client.table("topics")
+                    .select("mapping_hint")
+                    .eq("keyword", args.topic)
+                    .eq("status", "active")
+                    .limit(1)
+                    .execute()
+                    .data
+                )
+                if trow and trow[0].get("mapping_hint"):
+                    hint = trow[0]["mapping_hint"]
+            except Exception as e:  # noqa: BLE001
+                print(f"[run_once] couldn't read mapping_hint, continuing without: {e}", file=sys.stderr)
+
             # Topic → which subreddits to fetch + per-topic relevance keywords (LLM-derived; each falls
             # back to defaults on failure). Passing cache_client → if topics_cache hits (no TTL, permanent
             # since 2026-05-28), reuse directly so the same topic stays stable across runs.
             mapping = resolve_topic(
                 args.topic, DEFAULT_SUBREDDITS, cfg["keywords"],
                 cache_client=sb_client,
+                hint=hint,
             )
             print(f"[run_once] topic mapping subs={mapping['subreddits_source']}/"
                   f"kws={mapping['keywords_source']} "

@@ -115,6 +115,10 @@ export const strings: Strings = {
     "topic.newBtn": "建 + 切到它",
     "topic.switching": "切换中…",
     "topic.footer": "一次只跑一个主题。换主题 = 旧的归档、新的启用,各自的报告/收藏历史分开存,不会混。",
+    "topic.addHintLink": "+ 额外提示给 AI(可选)",
+    "topic.hintLabel": "额外提示词:",
+    "topic.hintPlaceholder": "例:重点 indie SaaS,不要游戏开发",
+    "topic.hintHelp": "AI 选版块时会先看这条;留空就用默认逻辑",
   },
   en: {
     // App-level
@@ -214,6 +218,10 @@ export const strings: Strings = {
     "topic.newBtn": "Create + switch",
     "topic.switching": "Switching…",
     "topic.footer": "One topic at a time. Switching = old one archived, new one activated; each keeps its own report/star history, never mixed.",
+    "topic.addHintLink": "+ Extra hint for the AI (optional)",
+    "topic.hintLabel": "Extra hint:",
+    "topic.hintPlaceholder": "e.g. focus on indie SaaS, NOT game dev",
+    "topic.hintHelp": "AI reads this first when picking subreddits; leave empty for default logic",
   },
 };
 

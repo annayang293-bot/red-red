@@ -61,25 +61,32 @@ def _openai_json(prompt: str) -> Optional[dict]:
 _last_intent: dict[str, str] = {}
 
 
-def _llm_subreddits(keyword: str) -> list[str]:
+def _llm_subreddits(keyword: str, *, hint: str | None = None) -> list[str]:
     """LLM suggests subreddits for the topic (used by TopicMapper's llm_suggest_fn). Ask for 10 → verification trims down.
 
-    Anna 2026-05-28 prompt v2 = two improvements stacked:
+    Anna 2026-05-28 prompt v3 = three layers:
     - **Forced classification** (option 2): the LLM must first commit to a content-type category
       (A创业 / B技术 / C工具 / D新闻 / E创作 / F教育) before it lists subreddits. This blocks the
       "AI 创业 → MachineLearning" failure mode, where the LLM defaulted to AI-tech subs because it
       treated the modifier 'AI' as the head.
     - **Few-shot positive+negative examples** (option 1): explicit "AI 创业 → ✅ SaaS / ❌
       MachineLearning" pairs, so the LLM sees the head-final pattern (in Chinese, "X Y" the head is Y).
+    - **Mega-sub override**: a hardcoded list of "if topic touches X, must include r/Y" flagship
+      subreddits, so cross-category strong subs (e.g. r/OpenAI for AI-anything) always land in the picks.
+
+    Option 3 (`hint`, Anna 2026-05-28): free-text guidance the user supplies for this topic, e.g.
+    "重点 indie SaaS, 不是游戏开发". When present, it's pinned at the top of the prompt so the LLM
+    treats it as a hard constraint on top of v3's framework. Lets the user manually steer past
+    LLM near-miss errors (r/indiedev game-dev vs r/indiehackers SaaS) without code changes.
     """
-    # prompt v3 (Anna 2026-05-28): v2 forced single-category and killed cross-category strong subs
-    # (e.g. r/OpenAI didn't make it into "AI 创业" because that's category C while the topic
-    # classified as A). Fix: primary + secondary classification, with an "obvious mega-sub
-    # override" so any well-known >1M-sub community for either the head or modifier is included
-    # regardless of category.
+    hint_block = (
+        f"⭐ 用户额外提示(优先级最高,违反这条的版块直接不要):\n   「{hint.strip()}」\n\n"
+        if hint and hint.strip() else ""
+    )
     prompt = (
         f"你在帮一个小红书博主从英文 subreddit 找选题灵感。主题: '{keyword}'\n\n"
-        "请按步骤思考:\n\n"
+        + hint_block
+        + "请按步骤思考:\n\n"
         "【第 1 步 · 主形态】这个主题的「核心内容形态」(从下列选一个):\n"
         "  A. 创业 / 商业 / SaaS / 独立开发 / 副业 / 增长\n"
         "  B. 技术学习 / 论文 / 模型训练 / 算法\n"
@@ -234,8 +241,15 @@ def resolve_topic(
     *,
     target_count: int = 6,
     cache_client=None,
+    hint: str | None = None,
 ) -> dict:
     """Topic → {subreddits: [...], keywords: [...]}.
+
+    hint (option 3, Anna 2026-05-28): free-text guidance from the user (e.g. "重点 indie SaaS")
+      that gets pinned at the top of the LLM prompt. Use to steer past LLM near-miss errors
+      (r/indiedev game-dev vs r/indiehackers SaaS) without re-coding the prompt framework.
+      Ignored on cache hit (the cache holds the resolved result; if the user wants the hint to
+      take effect, they should refresh the cache).
 
     cache_client (Supabase client): if passed → first check topics_cache (no TTL check; permanent
       since 2026-05-28). Hit = reuse directly (fixes "same topic chooses different subreddits each run",
@@ -262,13 +276,17 @@ def resolve_topic(
     try:
         # Have the LLM path over-supply (_llm_subreddits asks for 10); TopicMapper applies its algorithm
         # to 2*target first; verification trims down.
+        # Bind the hint to the suggest function so TopicMapper's signature stays untouched.
+        suggest_fn = (lambda kw, _h=hint: _llm_subreddits(kw, hint=_h)) if hint else _llm_subreddits
         mapper = TopicMapper(
             reddit_search_fn=_noop_reddit_search,
-            llm_suggest_fn=_llm_subreddits,
+            llm_suggest_fn=suggest_fn,
             target_count=target_count * 2,
         )
         result = mapper.map_topic(keyword)
         raw_subs = list(result.subreddit_names)
+        if hint:
+            print(f"[topic_resolve] applied user hint: {hint!r}", file=sys.stderr)
     except Exception as e:  # noqa: BLE001
         print(f"[topic_resolve] TopicMapper failed: {e}", file=sys.stderr)
 

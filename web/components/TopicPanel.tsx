@@ -16,12 +16,16 @@ export default function TopicPanel({
   activeTopic: string;
   sources: string[];
   scrapedSubreddits: string[];   // Full fetched list (includes those without Top items)
-  onSwitch: (keyword: string) => void;
+  // onSwitch: optional second arg is the user-supplied mapping hint (option 3, Anna 2026-05-28);
+  // wired to topics.mapping_hint on the backend. Existing callers passing only keyword still work.
+  onSwitch: (keyword: string, hint?: string) => void;
   onDelete: (topicId: number, keyword: string) => void;
   switching: boolean;
 }) {
   const { t } = useT();
   const [newTopic, setNewTopic] = useState("");
+  const [newHint, setNewHint] = useState("");
+  const [showHint, setShowHint] = useState(false);
   const others = topics.filter((t) => t.keyword !== activeTopic);
 
   return (
@@ -92,12 +96,38 @@ export default function TopicPanel({
             placeholder={t("topic.newPlaceholder")}
             className="w-full rounded-lg border border-line bg-white px-2.5 py-1.5 text-[13px] outline-none focus:border-terra"
           />
+
+          {/* Optional mapping-hint disclosure (option 3, Anna 2026-05-28). Hidden by default to
+              keep the panel light; expand-on-click for users who want to steer the LLM. */}
+          {!showHint ? (
+            <button
+              onClick={() => setShowHint(true)}
+              className="mt-1.5 text-[11px] text-mut underline hover:text-terra"
+            >
+              {t("topic.addHintLink")}
+            </button>
+          ) : (
+            <div className="mt-1.5">
+              <div className="mb-1 text-[11px] text-mut">{t("topic.hintLabel")}</div>
+              <textarea
+                value={newHint}
+                onChange={(e) => setNewHint(e.target.value)}
+                placeholder={t("topic.hintPlaceholder")}
+                rows={2}
+                className="w-full resize-none rounded-lg border border-line bg-white px-2.5 py-1.5 text-[12px] outline-none focus:border-terra"
+              />
+              <div className="mt-0.5 text-[10px] text-mut">{t("topic.hintHelp")}</div>
+            </div>
+          )}
+
           <button
             onClick={() => {
               const k = newTopic.trim();
               if (k) {
-                onSwitch(k);
+                onSwitch(k, newHint.trim() || undefined);
                 setNewTopic("");
+                setNewHint("");
+                setShowHint(false);
               }
             }}
             disabled={switching || !newTopic.trim()}

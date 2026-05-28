@@ -169,6 +169,77 @@ def test_llm_subreddits_parses_structured_response():
     print("✅ test_llm_subreddits_parses_structured_response")
 
 
+def test_llm_subreddits_injects_user_hint():
+    """🐞 (Anna 2026-05-28 option 3): when a user hint is passed, it gets pinned at the top of
+    the prompt so the LLM treats it as a hard constraint. Verify by capturing the prompt
+    text sent to _openai_json."""
+    captured = {}
+    orig_openai = tr._openai_json
+    def fake(prompt):
+        captured["prompt"] = prompt
+        return {"core_intent": "A", "core_noun": "教程", "modifier_intent": "C",
+                "subreddits": ["learnpython", "Python"]}
+    tr._openai_json = fake
+    try:
+        tr._last_intent.clear()
+        out = tr._llm_subreddits("Claude 教程", hint="重点 API 用法,不是聊天机器人玩法")
+        assert out == ["learnpython", "Python"], out
+        assert "用户额外提示" in captured["prompt"], "hint header missing from prompt"
+        assert "API 用法" in captured["prompt"], "hint text missing from prompt"
+        # The hint must appear BEFORE the step-1 classification block, so the LLM reads it first.
+        idx_hint = captured["prompt"].index("用户额外提示")
+        idx_step1 = captured["prompt"].index("第 1 步")
+        assert idx_hint < idx_step1, "hint should be pinned above the step-1 instructions"
+    finally:
+        tr._openai_json = orig_openai
+        tr._last_intent.clear()
+    print("✅ test_llm_subreddits_injects_user_hint")
+
+
+def test_llm_subreddits_no_hint_means_no_hint_block():
+    """🐞 No hint = no '用户额外提示' header in the prompt (keeps the prompt clean for the
+    common case)."""
+    captured = {}
+    orig_openai = tr._openai_json
+    def fake(prompt):
+        captured["prompt"] = prompt
+        return {"core_intent": "A", "subreddits": ["X"]}
+    tr._openai_json = fake
+    try:
+        tr._last_intent.clear()
+        tr._llm_subreddits("AI 创业")  # No hint kwarg
+        assert "用户额外提示" not in captured["prompt"], "no hint = no header"
+    finally:
+        tr._openai_json = orig_openai
+        tr._last_intent.clear()
+    print("✅ test_llm_subreddits_no_hint_means_no_hint_block")
+
+
+def test_resolve_topic_passes_hint_through():
+    """🐞 resolve_topic's hint kwarg reaches _llm_subreddits and logs a 'applied user hint' line."""
+    saved = _pop_key()
+    os.environ["OPENAI_API_KEY"] = "dummy"
+    orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
+
+    hints_seen = []
+    def fake_llm(kw, *, hint=None):
+        hints_seen.append(hint)
+        return ["sub1", "sub2"]
+    tr._llm_subreddits = fake_llm
+    tr._openai_json = lambda prompt: {"keywords": ["kw1"]}
+    tr._verify_subreddit = lambda n: True
+    try:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            tr.resolve_topic("Claude 教程", ["FB"], ["fb"], hint="重点 API 用法")
+        assert hints_seen == ["重点 API 用法"], hints_seen
+        assert "applied user hint" in err.getvalue(), err.getvalue()
+    finally:
+        tr._llm_subreddits, tr._openai_json, tr._verify_subreddit = orig_llm, orig_openai, orig_verify
+        _restore_key(saved)
+    print("✅ test_resolve_topic_passes_hint_through")
+
+
 def test_llm_subreddits_tolerates_legacy_response_shape():
     """🐞 LLM returning the old shape {subreddits: [...]} (no classification) still works —
     we extract the subs and skip the classification log line."""

@@ -122,14 +122,14 @@ export default function Home() {
   );
 
   const switchTopic = useCallback(
-    async (keyword: string) => {
+    async (keyword: string, hint?: string) => {
       setSwitching(true);
       setRunMsg("");
       try {
         const r = await fetch("/api/topics", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ keyword }),
+          body: JSON.stringify({ keyword, hint }),
         }).then((res) => res.json());
         if (r.ok || r.topic) {
           // Switched to a new topic: refresh topics/runs lists; load the new topic's latest report (likely none yet)
