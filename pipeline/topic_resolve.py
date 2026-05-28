@@ -25,6 +25,75 @@ MIN_SUBSCRIBERS = 100_000
 # probably incomplete and the run will produce thin / lopsided results).
 MIN_QUALITY_COUNT = 4
 
+# Mandatory mega-sub registry (Anna 2026-05-28 — promoted to TOP priority):
+# "high-subscriber subs MUST be included regardless of LLM picks, regardless of user hint —
+# every report during testing had a 强迁移 item from r/OpenAI, that signal is too good to lose
+# to LLM moodiness or an overly-broad hint."
+#
+# Format: (tuple of lowercased trigger substrings in the keyword, list of subs that must appear).
+# Triggers are checked against the **lowercased keyword** with substring contains; ASCII matches
+# also use word boundaries so 'ai' doesn't false-positive on 'hair'/'paint'. CJK matches use plain
+# substring (Chinese has no word boundary).
+#
+# Injection happens AFTER the LLM + verification step. It does NOT override deny-list / 404 /
+# banned subs (those came back from verify as drop) — we only re-add the mandatory if it's
+# currently missing AND we have no evidence it's dead.
+import re as _re
+
+MEGA_SUB_REGISTRY: list[tuple[tuple[str, ...], list[str]]] = [
+    # AI / LLM family — every report during testing had a strong-tier OpenAI item.
+    (("ai", "llm", "gpt", "chatgpt", "claude", "openai", "人工智能", "大模型", "大语言模型"),
+     ["OpenAI", "ArtificialIntelligence"]),
+    # Programming languages — flagship sub per language.
+    (("python", "django", "flask"), ["Python"]),
+    (("javascript", "typescript", "react", "vue", "node"), ["javascript"]),
+    (("rust",), ["rust"]),
+    (("golang", "go lang"), ["golang"]),
+    # Gaming.
+    (("game", "gaming", "游戏"), ["gaming", "gamedev"]),
+    # Writing / creating.
+    (("writing", "写作"), ["writing"]),
+    # Entrepreneurship — already strong in DEFAULT_SUBREDDITS but include here so the rule is
+    # uniform and discoverable.
+    (("startup", "entrepreneur", "saas", "创业"), ["Entrepreneur", "startups"]),
+]
+
+
+def _keyword_matches_trigger(keyword: str, trigger: str) -> bool:
+    """ASCII triggers use \\b word boundaries (so 'ai' doesn't match 'paint'); CJK triggers
+    use plain substring (no word boundaries in CJK)."""
+    lower = keyword.lower()
+    if _re.fullmatch(r"[a-z0-9 +.&/_-]+", trigger):
+        return _re.search(rf"\b{_re.escape(trigger)}\b", lower) is not None
+    return trigger in keyword  # CJK: substring on the original case-preserved keyword
+
+
+def _inject_mandatory_megasubs(keyword: str, current: list[str]) -> list[str]:
+    """Ensure mandatory mega-subs are in `current` (Anna 2026-05-28 absolute priority rule).
+    Returns the updated list — mandatory subs prepended if missing; existing order preserved
+    for everything else. Deterministic; does not call the network.
+    """
+    current_lower = {s.lower() for s in current}
+    to_inject: list[str] = []
+    for triggers, required in MEGA_SUB_REGISTRY:
+        if not any(_keyword_matches_trigger(keyword, t) for t in triggers):
+            continue
+        for sub in required:
+            if sub.lower() in current_lower:
+                continue
+            # First mandatory miss for this trigger is enough; we don't pile them all in
+            # (saves slots in the target_count budget).
+            to_inject.append(sub)
+            current_lower.add(sub.lower())
+            break  # one mandatory sub per trigger
+    if to_inject:
+        print(
+            f"[topic_resolve] mandatory mega-sub injection (Anna's absolute rule): "
+            f"adding {to_inject} to LLM picks for keyword={keyword!r}",
+            file=sys.stderr,
+        )
+    return to_inject + current  # prepend so rank/score doesn't bury them
+
 
 def _openai_json(prompt: str) -> Optional[dict]:
     """Call the LLM and parse JSON. Missing key / any failure → None (caller falls back).
@@ -306,6 +375,16 @@ def resolve_topic(
                 break
         else:
             print(f"[topic_resolve] dropping hallucinated/invalid/tiny subreddit: r/{s}", file=sys.stderr)
+
+    # ABSOLUTE-PRIORITY mega-sub injection (Anna 2026-05-28): high-subscriber subs MUST be in
+    # the final mapping regardless of what the LLM picked or what the user hint said. Every
+    # report during testing had a strong-tier r/OpenAI item, and an over-broad hint suppressed
+    # it once (test on 2026-05-28). This is the post-LLM, deterministic enforcement.
+    # Runs BEFORE the target_count trim below, so injected mandatories survive truncation.
+    verified = _inject_mandatory_megasubs(keyword, verified)
+    # Re-apply target_count cap (mandatories now have priority via the prepend).
+    if len(verified) > target_count:
+        verified = verified[:target_count]
     used_llm_subs = bool(verified)
     if verified:
         # Quality-floor warning (Anna 2026-05-28): when too few quality subs survive verification,

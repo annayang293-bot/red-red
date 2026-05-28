@@ -286,6 +286,90 @@ def test_resolve_topic_logs_classification():
     print("✅ test_resolve_topic_logs_classification")
 
 
+def test_mega_sub_injection_for_ai_keyword():
+    """🐞 (Anna 2026-05-28 absolute rule): for AI-adjacent keywords, r/OpenAI or r/ArtificialIntelligence
+    MUST land in the final mapping — even if the LLM didn't pick them and even if the user hint
+    suppressed them. Mega-sub injection runs post-verify, before target_count truncation."""
+    saved = _pop_key()
+    os.environ["OPENAI_API_KEY"] = "dummy"
+    orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
+
+    # LLM gives 6 entrepreneurship subs but completely skips OpenAI / ArtificialIntelligence
+    # (mimics the failure mode where a broad hint suppressed AI flagships).
+    tr._llm_subreddits = lambda kw, hint=None: [
+        "Entrepreneur", "startups", "indiehackers", "SaaS", "SideProject", "SmallBusiness"
+    ]
+    tr._openai_json = lambda prompt: {"keywords": ["startup"]}
+    tr._verify_subreddit = lambda n: True
+    try:
+        r = tr.resolve_topic("AI 创业", ["FB"], ["fb"])
+        subs = r["subreddits"]
+        # OpenAI (or ArtificialIntelligence) must be in the final list — that's the absolute rule.
+        ai_flag = "openai" in (s.lower() for s in subs) or "artificialintelligence" in (s.lower() for s in subs)
+        assert ai_flag, f"AI mega-sub injection must put OpenAI/AI in final list; got {subs}"
+        # Target_count=6 by default — list shouldn't blow past that.
+        assert len(subs) <= 6, f"list should not exceed target_count: {subs}"
+    finally:
+        tr._llm_subreddits, tr._openai_json, tr._verify_subreddit = orig_llm, orig_openai, orig_verify
+        _restore_key(saved)
+    print("✅ test_mega_sub_injection_for_ai_keyword")
+
+
+def test_mega_sub_injection_skips_when_already_present():
+    """🐞 If LLM already picked the mandatory sub, injection is a no-op (no duplicates).
+    Demonstrates the dedup path."""
+    saved = _pop_key()
+    os.environ["OPENAI_API_KEY"] = "dummy"
+    orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
+
+    tr._llm_subreddits = lambda kw, hint=None: ["OpenAI", "SaaS", "Entrepreneur", "startups"]
+    tr._openai_json = lambda prompt: {"keywords": ["startup"]}
+    tr._verify_subreddit = lambda n: True
+    try:
+        r = tr.resolve_topic("AI 创业", ["FB"], ["fb"])
+        subs = r["subreddits"]
+        # Count OpenAI — must be exactly 1 (no duplicate from injection)
+        assert sum(1 for s in subs if s.lower() == "openai") == 1, subs
+    finally:
+        tr._llm_subreddits, tr._openai_json, tr._verify_subreddit = orig_llm, orig_openai, orig_verify
+        _restore_key(saved)
+    print("✅ test_mega_sub_injection_skips_when_already_present")
+
+
+def test_mega_sub_injection_word_boundary_no_false_positive():
+    """🐞 ASCII triggers use \\b boundaries — 'ai' must NOT match 'paint', 'hair', etc.
+    Without this, the rule would inject OpenAI on any topic containing those substrings."""
+    # 'paint' contains 'ai' as a substring — but with \b boundary, the trigger shouldn't fire.
+    assert not tr._keyword_matches_trigger("paint art", "ai"), "'ai' should NOT match 'paint'"
+    assert not tr._keyword_matches_trigger("hairstyle", "ai"), "'ai' should NOT match 'hairstyle'"
+    # Standalone 'ai' must match.
+    assert tr._keyword_matches_trigger("AI startup", "ai"), "standalone 'ai' should match"
+    assert tr._keyword_matches_trigger("ChatGPT 教程", "chatgpt"), "'chatgpt' should match"
+    # CJK substring: '人工智能创业' contains the CJK trigger '人工智能'.
+    assert tr._keyword_matches_trigger("人工智能创业", "人工智能")
+    print("✅ test_mega_sub_injection_word_boundary_no_false_positive")
+
+
+def test_mega_sub_injection_inactive_for_unrelated_topic():
+    """🐞 No injection for topics that don't match any trigger (e.g. 'knitting')."""
+    saved = _pop_key()
+    os.environ["OPENAI_API_KEY"] = "dummy"
+    orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
+
+    tr._llm_subreddits = lambda kw, hint=None: ["knitting", "Crochet", "yarn", "craftparties"]
+    tr._openai_json = lambda prompt: {"keywords": ["yarn"]}
+    tr._verify_subreddit = lambda n: True
+    try:
+        r = tr.resolve_topic("knitting patterns", ["FB"], ["fb"])
+        assert "OpenAI" not in r["subreddits"], "no AI injection for unrelated topic"
+        assert "Python" not in r["subreddits"], "no Python injection"
+        assert "gaming" not in r["subreddits"], "no gaming injection"
+    finally:
+        tr._llm_subreddits, tr._openai_json, tr._verify_subreddit = orig_llm, orig_openai, orig_verify
+        _restore_key(saved)
+    print("✅ test_mega_sub_injection_inactive_for_unrelated_topic")
+
+
 def test_quality_count_below_threshold_warns_keeps_results():
     """🐞 (Anna 2026-05-28): if quality verification leaves <MIN_QUALITY_COUNT subs, surface a
     loud warning to stderr — but DO use whatever we got (don't silently fall back to AI defaults
