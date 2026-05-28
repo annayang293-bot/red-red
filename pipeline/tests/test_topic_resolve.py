@@ -143,23 +143,26 @@ def test_verify_subreddit_drops_private_restricted():
 
 
 def test_llm_subreddits_parses_structured_response():
-    """🐞 (Anna 2026-05-28 prompt v2): _llm_subreddits parses the new structured JSON
-    {core_intent, core_noun, subreddits}; stashes the classification for later logging;
+    """🐞 (Anna 2026-05-28 prompt v3): _llm_subreddits parses {core_intent, core_noun, modifier_intent,
+    subreddits}; stashes the primary+modifier classification for later logging;
     returns plain list (TopicMapper.llm_suggest_fn contract unchanged)."""
     orig_openai = tr._openai_json
     tr._openai_json = lambda prompt: {
         "core_intent": "A",
         "core_noun": "创业",
-        "subreddits": ["SaaS", "Entrepreneur", "indiehackers"],
+        "modifier_intent": "C",
+        "subreddits": ["SaaS", "Entrepreneur", "indiehackers", "OpenAI"],
     }
     try:
         # Clear any stashed state from earlier tests in this run
         tr._last_intent.clear()
         out = tr._llm_subreddits("AI 创业")
-        assert out == ["SaaS", "Entrepreneur", "indiehackers"], out
-        # Classification should be stashed for resolve_topic to log
-        assert tr._last_intent.get("AI 创业", "").startswith("A ("), tr._last_intent
-        assert "创业" in tr._last_intent["AI 创业"]
+        assert out == ["SaaS", "Entrepreneur", "indiehackers", "OpenAI"], out
+        # Classification should be stashed for resolve_topic to log: primary + modifier
+        stashed = tr._last_intent.get("AI 创业", "")
+        assert stashed.startswith("A ("), stashed
+        assert "创业" in stashed
+        assert "modifier=C" in stashed, "modifier intent should be captured"
     finally:
         tr._openai_json = orig_openai
         tr._last_intent.clear()
@@ -185,17 +188,16 @@ def test_llm_subreddits_tolerates_legacy_response_shape():
 def test_resolve_topic_logs_classification():
     """🐞 (Anna 2026-05-28): resolve_topic surfaces the LLM's classification to stderr so the
     operator can verify the topic was understood (the failure mode where LLM tagged 'AI 创业'
-    as B is silent without this signal)."""
+    as B is silent without this signal). v3: also surfaces the modifier intent."""
     saved = _pop_key()
     os.environ["OPENAI_API_KEY"] = "dummy"
     orig_llm, orig_openai, orig_verify = tr._llm_subreddits, tr._openai_json, tr._verify_subreddit
 
     # Use real _llm_subreddits so it stashes intent — but stub _openai_json (both subs and keywords calls).
-    call_count = {"n": 0}
     def fake_openai(prompt):
-        call_count["n"] += 1
         if "core_intent" in prompt:
-            return {"core_intent": "A", "core_noun": "创业", "subreddits": ["SaaS", "Entrepreneur"]}
+            return {"core_intent": "A", "core_noun": "创业", "modifier_intent": "C",
+                    "subreddits": ["SaaS", "Entrepreneur", "OpenAI"]}
         return {"keywords": ["startup", "saas"]}
     tr._openai_json = fake_openai
     tr._verify_subreddit = lambda n: True
@@ -206,6 +208,7 @@ def test_resolve_topic_logs_classification():
         log = err.getvalue()
         assert "classified 'AI 创业' as content type: A" in log, f"classification not logged: {log!r}"
         assert "创业" in log
+        assert "modifier=C" in log, "modifier intent should be in the log line"
     finally:
         tr._llm_subreddits, tr._openai_json, tr._verify_subreddit = orig_llm, orig_openai, orig_verify
         _restore_key(saved)

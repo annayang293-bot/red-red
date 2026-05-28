@@ -72,38 +72,60 @@ def _llm_subreddits(keyword: str) -> list[str]:
     - **Few-shot positive+negative examples** (option 1): explicit "AI 创业 → ✅ SaaS / ❌
       MachineLearning" pairs, so the LLM sees the head-final pattern (in Chinese, "X Y" the head is Y).
     """
+    # prompt v3 (Anna 2026-05-28): v2 forced single-category and killed cross-category strong subs
+    # (e.g. r/OpenAI didn't make it into "AI 创业" because that's category C while the topic
+    # classified as A). Fix: primary + secondary classification, with an "obvious mega-sub
+    # override" so any well-known >1M-sub community for either the head or modifier is included
+    # regardless of category.
     prompt = (
         f"你在帮一个小红书博主从英文 subreddit 找选题灵感。主题: '{keyword}'\n\n"
         "请按步骤思考:\n\n"
-        "【第 1 步】判断这个主题的「核心内容形态」(从下列选一个或 mixed):\n"
+        "【第 1 步 · 主形态】这个主题的「核心内容形态」(从下列选一个):\n"
         "  A. 创业 / 商业 / SaaS / 独立开发 / 副业 / 增长\n"
         "  B. 技术学习 / 论文 / 模型训练 / 算法\n"
         "  C. 工具使用 / 产品评测 / 上手教程\n"
         "  D. 文化新闻 / 行业八卦 / 趋势讨论\n"
         "  E. 创作 / 写作 / 设计 / 内容\n"
-        "  F. 教育 / 职业 / 学习路径\n"
-        "  mixed (多种)\n\n"
-        "⚠️ **复合主题 X Y(中文「修饰+中心」结构)的核心通常在后半截(目标活动),前半截是修饰词**。看几个对照:\n"
-        "  - 「AI 创业」核心=创业 → A(✅ SaaS / Entrepreneur / indiehackers;❌ MachineLearning / DeepLearning)\n"
-        "  - 「AI 编程」核心=编程 → C 或 B(✅ programming / learnprogramming;❌ MachineLearning)\n"
-        "  - 「AI 写作」核心=写作 → E(✅ writing / copywriting;❌ MachineLearning)\n"
-        "  - 「ChatGPT 副业」核心=副业 → A(✅ Entrepreneur / sidehustle;❌ OpenAI)\n"
-        "  - 「Claude 教程」核心=教程 → C(✅ ChatGPTPromptGenius / ArtificialIntelligence;❌ MachineLearning)\n\n"
-        "【第 2 步】基于第 1 步判断的核心形态,推荐 **10 个真实存在、大型、活跃、聚焦你判定形态**的英文 subreddit。\n\n"
+        "  F. 教育 / 职业 / 学习路径\n\n"
+        "⚠️ **复合主题 X Y(中文「修饰+中心」结构)的核心通常在后半截(目标活动),前半截是修饰词**。\n"
+        "  - 「AI 创业」核心=创业 → 主=A(✅ SaaS / Entrepreneur;❌ MachineLearning / DeepLearning)\n"
+        "  - 「AI 编程」核心=编程 → 主=C 或 B(✅ programming / learnprogramming)\n"
+        "  - 「AI 写作」核心=写作 → 主=E(✅ writing / copywriting)\n"
+        "  - 「ChatGPT 副业」核心=副业 → 主=A(✅ Entrepreneur / sidehustle)\n\n"
+        "【第 2 步 · 辅形态】判断修饰词(X)所在的领域类别,挑一个(或 'none' 如果是纯主题没修饰词):\n"
+        "  例如 「AI 创业」修饰=AI → 辅=C(AI 工具/产品)\n"
+        "  例如 「Python 创业」修饰=Python → 辅=C(编程工具)\n\n"
+        "【第 3 步 · 推荐 10 个版块】**必须凑够 10 个**,结构:\n"
+        "  - **6-7 个主形态版块**(核心活动的版块)\n"
+        "  - **3-4 个辅形态版块**(修饰词领域的版块) — 这部分**不要省略**,即使主形态够也要给\n"
+        "  - 🌟 **强制覆盖规则**:如果主题或修饰词触及以下任意领域,**对应的旗舰版块必须出现在 10 个里**\n"
+        "    - 涉及 AI / LLM / ChatGPT → 必须给 r/OpenAI(280 万订阅)和 r/ArtificialIntelligence(90 万)其中至少一个\n"
+        "    - 涉及 Python → 必须给 r/Python\n"
+        "    - 涉及 JavaScript / TypeScript → 必须给 r/javascript\n"
+        "    - 涉及游戏 → 必须给 r/gaming 或 r/gamedev\n"
+        "    - 涉及创业 → 必须给 r/Entrepreneur 或 r/startups\n"
+        "    - 涉及写作 → 必须给 r/writing\n"
+        "    - 这条规则**优先级高于第 1 步的纯主形态分类**;旗舰版块即使不在主形态类别里也要包含\n\n"
         "要求:\n"
         "- 不带 r/ 前缀;只用字母/数字/下划线\n"
         "- 不要广义大众版块如 funny / news / pics\n"
         "- 订阅 <10 万的会被验证步骤剔除,浪费名额\n"
-        "- 只给真实存在的版块——宁可少给也别瞎编\n"
-        "- **不要选修饰词那边的版块**(例如核心是创业,就别给 MachineLearning)\n\n"
-        '只输出 JSON:{"core_intent": "A|B|C|D|E|F|mixed", "core_noun": "...", "subreddits": ["name1", ...]}'
+        "- 只给真实存在、拼写正确的版块(例如 r/startups 是 plural,r/Startup 单数几乎不存在)\n"
+        "- 宁可少给也别瞎编\n\n"
+        '只输出 JSON:{"core_intent": "A|B|C|D|E|F|mixed", "core_noun": "...", "modifier_intent": "A|B|C|D|E|F|none", "subreddits": ["name1", ...]}'
     )
     out = _openai_json(prompt) or {}
-    # Stash the classification so resolve_topic can surface it in logs/output.
+    # Stash the classification so resolve_topic can surface it in logs/output. v3 also captures
+    # the modifier's intent (e.g. 'AI 创业' = A + C) so the operator can see whether the
+    # mega-sub-override rule actually triggered.
     intent = (out.get("core_intent") or "").strip().upper()
+    mod_intent = (out.get("modifier_intent") or "").strip().upper()
     noun = (out.get("core_noun") or "").strip()
     if intent:
-        _last_intent[keyword] = f"{intent} (core={noun!r})" if noun else intent
+        suffix = f" + modifier={mod_intent}" if mod_intent and mod_intent != "NONE" else ""
+        _last_intent[keyword] = (
+            f"{intent} (core={noun!r}){suffix}" if noun else f"{intent}{suffix}"
+        )
     return [
         s.strip().lstrip("r/").lstrip("/")
         for s in (out.get("subreddits") or [])
