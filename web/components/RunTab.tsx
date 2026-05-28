@@ -1,6 +1,7 @@
 import { Report } from "@/lib/types";
 import ReportList from "./ReportList";
 import TopicPanel, { TopicLite } from "./TopicPanel";
+import RunProgress from "./RunProgress";
 import { useT } from "@/lib/i18n";
 
 export default function RunTab({
@@ -97,6 +98,10 @@ export default function RunTab({
             </button>
           </div>
         )}
+
+        {/* Show the progress bar while a run is in flight; remount on each new run via `key`
+            so elapsed-time counter resets to zero each time. */}
+        {running && <RunProgress key={runMsg} />}
 
         {runMsg && <p className="mb-1 mt-2 text-xs text-mut">{runMsg}</p>}
 

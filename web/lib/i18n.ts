@@ -59,6 +59,10 @@ export const strings: Strings = {
     "run.msg.deleteFailedTpl": "没删成“{kw}”:{msg}",
     "run.msg.deleteDoneTpl": "✅ 删了主题“{kw}”",
     "run.msg.backFailedPrefix": "回退失败:",
+    "run.progress.fetch": "约 1/4 步:从 Reddit / Product Hunt 抓取…",
+    "run.progress.score": "约 2/4 步:打分排序…",
+    "run.progress.review": "约 3/4 步:AI 点评分档…",
+    "run.progress.save": "约 4/4 步:存入数据库…",
 
     // ReportList
     "list.openOriginalAria": "打开原帖",
@@ -162,6 +166,10 @@ export const strings: Strings = {
     "run.msg.deleteFailedTpl": "Couldn't delete \"{kw}\": {msg}",
     "run.msg.deleteDoneTpl": "✅ Deleted topic \"{kw}\"",
     "run.msg.backFailedPrefix": "Back failed: ",
+    "run.progress.fetch": "~step 1/4: fetching from Reddit / Product Hunt…",
+    "run.progress.score": "~step 2/4: scoring & ranking…",
+    "run.progress.review": "~step 3/4: AI review & tiering…",
+    "run.progress.save": "~step 4/4: saving to database…",
 
     // ReportList
     "list.openOriginalAria": "Open original",
