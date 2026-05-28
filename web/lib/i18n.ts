@@ -93,6 +93,16 @@ export const strings: Strings = {
     "set.hotnessNote": "热度怎么排:看点赞 + 评论 + 转发,越新的越靠前(当前是默认口味,以后可调)",
     "set.placeholder": "真功能(密钥 / 关注词 / 口味调节)做好后接到这里",
 
+    // Tier names + descriptions (used by ReportList; switchable via toggle)
+    "tier.strong.name": "强迁移",
+    "tier.strong.desc": "直接能做小红书选题",
+    "tier.mid.name": "中等迁移",
+    "tier.mid.desc": "要加工 / 看人设",
+    "tier.weak.name": "弱迁移",
+    "tier.weak.desc": "开发圈内 / 暂不建议",
+    "tier.unknown.name": "未分档",
+    "tier.unknown.desc": "",
+
     // TopicPanel
     "topic.heading": "🎯 主题",
     "topic.activeBadge": "当前",
@@ -181,6 +191,16 @@ export const strings: Strings = {
     "set.subtitle": "Account links / keyword list / scoring taste",
     "set.hotnessNote": "Hotness ranking uses likes + comments + saves; newer ranks higher (default taste, tunable later).",
     "set.placeholder": "Real settings (keys / keywords / scoring knobs) will surface here once shipped",
+
+    // Tier names + descriptions
+    "tier.strong.name": "Strong",
+    "tier.strong.desc": "Directly usable as a Xiaohongshu topic",
+    "tier.mid.name": "Medium",
+    "tier.mid.desc": "Needs rework / depends on persona",
+    "tier.weak.name": "Weak",
+    "tier.weak.desc": "Niche / not recommended",
+    "tier.unknown.name": "Untiered",
+    "tier.unknown.desc": "",
 
     // TopicPanel
     "topic.heading": "🎯 Topics",

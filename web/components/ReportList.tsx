@@ -53,6 +53,15 @@ export function Row({
   );
 }
 
+// Map a tier's emoji (stable across languages) to its i18n key prefix.
+// We index by emoji rather than the Chinese tier name so the lookup keeps working
+// regardless of UI language.
+const EMOJI_TO_TIER_KEY: Record<string, string> = {
+  "🔥": "tier.strong",
+  "🟡": "tier.mid",
+  "⚪": "tier.weak",
+};
+
 export default function ReportList({
   items,
   starred,
@@ -62,42 +71,48 @@ export default function ReportList({
   starred: Set<string>;
   onToggle: (id: string) => void;
 }) {
+  const { t } = useT();
   // Group by tier (keep hot_score order inside each group)
-  const tiers: { emoji: string; name: string; desc: string; items: ReportItem[] }[] = [];
+  const tiers: { emoji: string; name: string; items: ReportItem[] }[] = [];
   for (const it of items) {
-    let g = tiers.find((t) => t.emoji === it.tier_emoji && t.name === it.tier_name);
+    let g = tiers.find((tt) => tt.emoji === it.tier_emoji);
     if (!g) {
-      g = { emoji: it.tier_emoji, name: it.tier_name, desc: it.tier_desc, items: [] };
+      g = { emoji: it.tier_emoji, name: it.tier_name, items: [] };
       tiers.push(g);
     }
     g.items.push(it);
   }
   // Sort tiers by **priority**: strong → medium → weak (don't sort by "first appearance", otherwise
   // under real AI tiering, strong items would sometimes appear below medium).
-  const TIER_ORDER: Record<string, number> = { 强迁移: 0, 中等迁移: 1, 弱迁移: 2 };
-  tiers.sort((a, b) => (TIER_ORDER[a.name] ?? 9) - (TIER_ORDER[b.name] ?? 9));
+  const TIER_ORDER: Record<string, number> = { "🔥": 0, "🟡": 1, "⚪": 2 };
+  tiers.sort((a, b) => (TIER_ORDER[a.emoji] ?? 9) - (TIER_ORDER[b.emoji] ?? 9));
 
   return (
     <div>
-      {tiers.map((t) => (
-        <section key={t.emoji + t.name}>
-          <div className="mb-1 mt-6 flex items-baseline gap-2 border-b-2 border-line pb-1.5 text-base">
-            <span>{t.emoji}</span>
-            <b className={tierColor[t.emoji] ?? "text-weak"}>{t.name}</b>
-            <span className="text-xs font-normal text-mut">{t.desc}</span>
-          </div>
-          <div>
-            {t.items.map((it) => (
-              <Row
-                key={it.id}
-                item={it}
-                starred={starred.has(it.id)}
-                onToggle={onToggle}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
+      {tiers.map((tier) => {
+        const keyPrefix = EMOJI_TO_TIER_KEY[tier.emoji] ?? "tier.unknown";
+        const label = t(`${keyPrefix}.name`);
+        const desc = t(`${keyPrefix}.desc`);
+        return (
+          <section key={tier.emoji + label}>
+            <div className="mb-1 mt-6 flex items-baseline gap-2 border-b-2 border-line pb-1.5 text-base">
+              <span>{tier.emoji}</span>
+              <b className={tierColor[tier.emoji] ?? "text-weak"}>{label}</b>
+              <span className="text-xs font-normal text-mut">{desc}</span>
+            </div>
+            <div>
+              {tier.items.map((it) => (
+                <Row
+                  key={it.id}
+                  item={it}
+                  starred={starred.has(it.id)}
+                  onToggle={onToggle}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
