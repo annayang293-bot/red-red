@@ -11,8 +11,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const sb = getSupabaseAdmin();
     const idParam = String(req.query.id ?? "");
 
-    // Resolve the target run
-    let runQuery = sb.from("runs").select("run_id, topic_keyword, started_at, subreddits");
+    // Resolve the target run (now also fetch topic_id so we can compute "recurring vs new")
+    let runQuery = sb.from("runs").select("run_id, topic_id, topic_keyword, started_at, subreddits");
     if (idParam === "latest") {
       // "Most recent" = most recent run of the **current active topic** (otherwise switching to a
       // brand-new untouched topic would bleed an older report from another topic).
@@ -41,7 +41,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .order("rank", { ascending: true });
     if (repErr) throw repErr;
 
-    const items = reportRowsToItems((rows ?? []) as unknown as ReportRow[], runRow.run_id);
+    // "Recurring" semantics (Anna 2026-05-28): a post is recurring if it appeared in any EARLIER
+    // same-topic run's Top-20 — NOT just "ever existed in posts_archive". So we fetch the set of
+    // post_ids that showed up in report_top20 for runs of this topic with started_at < this run's,
+    // and pass it down. Two-step query because PostgREST can't combine in one round trip while
+    // filtering by the parent run's started_at.
+    const earlierRunsQ = await sb
+      .from("runs")
+      .select("run_id")
+      .eq("topic_id", runRow.topic_id)
+      .lt("started_at", runRow.started_at);
+    if (earlierRunsQ.error) throw earlierRunsQ.error;
+    const earlierRunIds = (earlierRunsQ.data ?? []).map((r) => r.run_id);
+    const previouslyReportedPostIds = new Set<number>();
+    if (earlierRunIds.length > 0) {
+      const earlierReportQ = await sb
+        .from("report_top20")
+        .select("post_id")
+        .in("run_id", earlierRunIds);
+      if (earlierReportQ.error) throw earlierReportQ.error;
+      for (const r of earlierReportQ.data ?? []) {
+        if (typeof r.post_id === "number") previouslyReportedPostIds.add(r.post_id);
+      }
+    }
+
+    const items = reportRowsToItems(
+      (rows ?? []) as unknown as ReportRow[],
+      previouslyReportedPostIds,
+    );
     const date = String(runRow.started_at ?? "").slice(0, 10);
     const report = buildReport(date, runRow.topic_keyword ?? "", items);
     // scrapedSubreddits = full fetched list (Anna 2026-05-27, topic-mapping visibility)

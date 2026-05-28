@@ -74,14 +74,18 @@ export function postToReportItem(
     tier?: string | null;
     comment?: string | null;
     xhs_title?: string | null;
-    currentRunId?: number; // If passed, computes "new (first-seen=this run) / recurring (first-seen earlier)"
+    // Set of post_ids that appeared in an EARLIER same-topic report_top20 (Anna 2026-05-28
+    // semantics: "recurring" = "this post was already in a previous Top-20 report for this topic",
+    // NOT "this post existed anywhere in posts_archive before now"). If undefined, no new/recurring
+    // tagging is computed (e.g. the starred-library view has no run context).
+    previouslyReportedPostIds?: Set<number>;
   } = {}
 ): ReportItem | null {
   if (!post || post.post_id == null || !post.title || !post.url) return null;
-  // New = this row's first-insert IS the current run; recurring = seen in an earlier run (append-only: run_id = first-seen run)
+  // is_new = was this post in a previous Top-20? recurring if yes, new if no, undefined if we have no run context.
   const isNew =
-    opts.currentRunId != null && post.run_id != null
-      ? post.run_id === opts.currentRunId
+    opts.previouslyReportedPostIds !== undefined
+      ? !opts.previouslyReportedPostIds.has(post.post_id)
       : undefined;
   // tier preference: report_top20.tier (short name); otherwise fall back to first char of ai_review.tier (full name).
   const shortTier =
@@ -111,8 +115,9 @@ export function postToReportItem(
 }
 
 /** report_top20 (joined with posts_archive) row set → ReportItem[] (by rank, bad rows skipped).
- *  currentRunId: this report's run_id, used to tag "new / recurring". */
-export function reportRowsToItems(rows: ReportRow[], currentRunId?: number): ReportItem[] {
+ *  previouslyReportedPostIds: set of post_ids that appeared in earlier same-topic reports;
+ *  callers compute this from runs+report_top20 and pass it in to tag "new / recurring". */
+export function reportRowsToItems(rows: ReportRow[], previouslyReportedPostIds?: Set<number>): ReportItem[] {
   const items: ReportItem[] = [];
   for (const r of rows || []) {
     const it = postToReportItem(r.posts_archive, {
@@ -120,7 +125,7 @@ export function reportRowsToItems(rows: ReportRow[], currentRunId?: number): Rep
       tier: r.tier,
       comment: r.comment,
       xhs_title: r.xhs_title,
-      currentRunId,
+      previouslyReportedPostIds,
     });
     if (it) items.push(it);
   }
