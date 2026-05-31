@@ -13,6 +13,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -60,12 +61,21 @@ def _enrich_top_with_comments(sources, report_items, cfg):
     Comments are stored on `item.source_native["comments"]` (list of dicts), which then flows
     through to `posts_archive.comments_summary` and the frontend ReportItem.
 
-    Adds ~20 HTTP calls (one per Top-20 item) → ~20-40s per run. Each fetch failure is logged
-    and skipped — comments are optional enrichment, never a blocker.
+    Rate-limiting (Anna 2026-05-31): Reddit returns HTTP 429 when comment-page URLs are hit
+    in rapid succession (live runs 47-48 confirmed only the first 3-5 items got through before
+    being throttled). We pace requests with a sleep between successful fetches — default 1.5s
+    keeps us under ~30 req/min (anonymous Reddit's documented limit is 60/min; we leave half
+    the budget for the listing fetches that already happened earlier in the run).
+
+    Adds ~20 HTTP calls × ~1.5s pacing → ~30s per run. Each fetch failure is logged and skipped;
+    comments are optional enrichment, never a blocker on the run.
     """
-    max_comments = int((cfg.get("comments") or {}).get("max_per_post", 10))
+    comments_cfg = cfg.get("comments") or {}
+    max_comments = int(comments_cfg.get("max_per_post", 10))
+    rate_limit_sleep = float(comments_cfg.get("rate_limit_sleep", 1.5))
     # Build a quick lookup so we don't scan the sources list 20 times.
     by_source = {getattr(s, "name", None): s for s in sources}
+    pending: list[tuple] = []  # list of (item, src, permalink) to fetch with pacing
     for it in report_items:
         src = by_source.get(it.source)
         if src is None or not hasattr(src, "fetch_post_comments"):
@@ -73,6 +83,10 @@ def _enrich_top_with_comments(sources, report_items, cfg):
         permalink = (it.source_native or {}).get("permalink")
         if not permalink:
             continue
+        pending.append((it, src, permalink))
+    for idx, (it, src, permalink) in enumerate(pending):
+        if idx > 0 and rate_limit_sleep > 0:
+            time.sleep(rate_limit_sleep)
         try:
             comments = src.fetch_post_comments(
                 permalink, op_author=it.author, max_comments=max_comments,

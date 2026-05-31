@@ -188,6 +188,29 @@ class SupabaseStore:
                 for r in saved:
                     key_to_pid[(r["source"], r["source_native_id"])] = r["post_id"]
 
+            # Comments-summary refresh for existing rows (Anna 2026-05-31).
+            # posts_archive is append-only for *content* (Rex 🔴1) — title/score/etc. snapshot at first
+            # insert. But comments_summary is an enrichment that comes in on each Top-N run for the post,
+            # and it strictly improves over time (more recent comments are more useful for System ② drafting).
+            # Updating just that single column on existing rows is consistent with Rex's invariant: we're
+            # not rewriting historical post content, just attaching the latest community thread.
+            for p in rows["posts"]:
+                key = (p["source"], p["source_native_id"])
+                new_comments = p.get("comments_summary")
+                if not new_comments:
+                    continue
+                pid = key_to_pid.get(key)
+                if pid is None:
+                    continue
+                # If this row was just inserted, the insert already carried comments_summary — skip the
+                # redundant UPDATE.
+                if any((nr.get("source"), nr.get("source_native_id")) == key for nr in new_rows):
+                    continue
+                self._exec(
+                    self.c.table("posts_archive")
+                    .update({"comments_summary": new_comments})
+                    .eq("post_id", pid))
+
         # report_top20: reference the real post_id (top posts must be in key_to_pid: either pre-existing or just inserted)
         rep_rows = []
         for r in rows["report"]:
