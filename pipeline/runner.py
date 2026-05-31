@@ -53,6 +53,39 @@ class RunResult:
         return len(self.top)
 
 
+def _enrich_top_with_comments(sources, report_items, cfg):
+    """Attach top-N comments to each Top-N item whose source supports `fetch_post_comments`.
+
+    Currently only RedditSource (old_html mode) — other adapters return empty / silently skip.
+    Comments are stored on `item.source_native["comments"]` (list of dicts), which then flows
+    through to `posts_archive.comments_summary` and the frontend ReportItem.
+
+    Adds ~20 HTTP calls (one per Top-20 item) → ~20-40s per run. Each fetch failure is logged
+    and skipped — comments are optional enrichment, never a blocker.
+    """
+    max_comments = int((cfg.get("comments") or {}).get("max_per_post", 10))
+    # Build a quick lookup so we don't scan the sources list 20 times.
+    by_source = {getattr(s, "name", None): s for s in sources}
+    for it in report_items:
+        src = by_source.get(it.source)
+        if src is None or not hasattr(src, "fetch_post_comments"):
+            continue
+        permalink = (it.source_native or {}).get("permalink")
+        if not permalink:
+            continue
+        try:
+            comments = src.fetch_post_comments(
+                permalink, op_author=it.author, max_comments=max_comments,
+            )
+        except Exception as e:  # noqa: BLE001 — comment fetch is best-effort
+            print(f"[runner] comments fetch failed for {permalink}: {e}")
+            continue
+        if comments:
+            if it.source_native is None:
+                it.source_native = {}
+            it.source_native["comments"] = comments
+
+
 def sanity_check(report_items, ai_mode, failed_sources, ai_meta_missing=0):
     """Post-run content sanity scan (Anna locked 5 lightweight checks, hardening #4)."""
     n = len(report_items)
@@ -121,6 +154,12 @@ def run_pipeline(topic, sources, *, cfg=None, keywords=None,
         cfg)
     report_items = select_ranked(hot, cfg, cfg["output"]["daily_top_n"], quota_pool=rel_pool)
     enrich_tags(report_items, keywords, cfg)
+
+    # ④.5 Comments enrichment (Anna 2026-05-31): for each Top-N item from a source that supports
+    # fetch_post_comments (currently RedditSource in old_html mode), pull top N comments and
+    # attach to source_native["comments"]. Runs BEFORE AI review so the LLM can read community
+    # responses. Optional / fail-safe — comment fetch errors don't tank the pipeline.
+    _enrich_top_with_comments(sources, report_items, cfg)
 
     # ⑤ AI review (strong/medium/weak)
     meta, ai_mode = review_fn(report_items, cfg)

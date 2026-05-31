@@ -28,6 +28,12 @@ def _tier_db(tier):
 def _post_row(it, fp: str, ai: Optional[dict]) -> dict:
     """HotItem → posts_archive row (excluding run_id / post_id, those are filled / fetched at write time)."""
     sn = it.source_native or {}
+    # Comments enrichment (Anna 2026-05-31): runner.py's _enrich_top_with_comments attaches a list
+    # of {id, score, author, body, is_op, replies} dicts to source_native["comments"] for any
+    # Top-N item from a source that supports comment fetch (currently RedditSource). We lift it
+    # out into the canonical posts_archive.comments_summary JSONB column so System ② can read it
+    # without re-parsing source_native.
+    comments_summary = sn.get("comments") if sn.get("comments") else None
     return {
         "source": it.source,
         "source_native_id": it.source_native_id,
@@ -39,6 +45,7 @@ def _post_row(it, fp: str, ai: Optional[dict]) -> dict:
         "relevance_score": it.relevance_score,
         "tags_json": it.tags,
         "ai_review": ai,                       # {tier, comment} only present for items in top
+        "comments_summary": comments_summary,  # [{score, author, body, is_op, replies}, ...] or None
         "published_at": it.published_at,
         "fetched_at": it.captured_at,
         "config_fingerprint": sn.get("config_fingerprint", fp),

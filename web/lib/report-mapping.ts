@@ -5,7 +5,7 @@
  * required fields validated, bad rows skipped, and posts_archive / report_top20 / starred shapes
  * unified into ReportItem.
  */
-import { Report, ReportItem } from "./types";
+import { Report, ReportComment, ReportItem } from "./types";
 
 // report_top20.tier is short-name (强/中/弱); map to the frontend's three-piece display tuple.
 const TIER_META: Record<string, { emoji: string; name: string; desc: string }> = {
@@ -26,6 +26,9 @@ export type PostRow = {
   raw_metrics: Record<string, unknown> | null;
   ai_review: { tier?: string; comment?: string } | null;
   source_native: Record<string, unknown> | null;
+  // comments_summary lands here as JSONB from posts_archive — list of comment dicts written by
+  // the runner's enrich step (only present for Top-N items at the time they entered a report).
+  comments_summary: unknown;
   run_id: number | null; // first-insert run (append-only) → used to judge "new post / post recurring"
 };
 
@@ -51,6 +54,30 @@ export type StarredRow = {
 function toStr(v: unknown): string {
   if (v === null || v === undefined) return "";
   return String(v);
+}
+
+/** Coerce a posts_archive.comments_summary JSONB blob into a typed list — defensively skip
+ *  malformed entries instead of throwing (operator-data hygiene; the writer side could change). */
+function parseComments(raw: unknown): ReportComment[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ReportComment[] = [];
+  for (const c of raw) {
+    if (!c || typeof c !== "object") continue;
+    const obj = c as Record<string, unknown>;
+    const id = toStr(obj.id);
+    const author = toStr(obj.author);
+    const body = toStr(obj.body);
+    if (!body) continue;  // Skip empties; nothing to show.
+    out.push({
+      id,
+      author,
+      score: typeof obj.score === "number" ? obj.score : Number(obj.score) || 0,
+      body,
+      is_op: Boolean(obj.is_op),
+      replies: typeof obj.replies === "number" ? obj.replies : Number(obj.replies) || 0,
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Source display name: reddit → r/<sub>, product_hunt → "Product Hunt", others → raw value. */
@@ -111,6 +138,7 @@ export function postToReportItem(
     url: toStr(post.url),
     comment: toStr(comment),
     is_new: isNew,
+    comments_summary: parseComments(post.comments_summary),
   };
 }
 

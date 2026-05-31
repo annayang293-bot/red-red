@@ -69,6 +69,108 @@ _ATTR_SUBREDDIT_RE = re.compile(r'data-subreddit="([^"]*)"', re.IGNORECASE)
 _TITLE_RE = re.compile(r'<a[^>]+class="title[^"]*"[^>]*>([^<]+)</a>')
 _FLAIR_RE = re.compile(r'<span[^>]+class="[^"]*linkflairlabel[^"]*"[^>]+title="([^"]*)"')
 
+# ---- Comment-page parsing (Anna 2026-05-31, comments_summary wiring) ----
+#
+# old.reddit's comment thread is a forest of <div data-type="comment" ...> elements. For Top-20
+# enrichment we only need the top N by score from the first level, plus is_op detection. Body
+# lives in a nested <div class="md"> right after the comment opening.
+_COMMENT_OPEN_RE = re.compile(
+    r'<div([^>]*?data-fullname="(t1_[a-z0-9]+)"[^>]*?data-type="comment"[^>]*)>',
+    re.IGNORECASE,
+)
+# Score: the span's title attr is the canonical integer (visible "1 point" is rounded text).
+_COMMENT_SCORE_RE = re.compile(r'<span class="score unvoted"[^>]*?title="(-?\d+)"', re.IGNORECASE)
+# Body: first <div class="md ..."> after the comment opening. The body content is markdown-rendered HTML.
+_COMMENT_BODY_RE = re.compile(r'<div class="md[^"]*"[^>]*>(.+?)</div>\s*</form>', re.DOTALL | re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
+
+# Authors we never want to surface — these are bot / mod posts that drown out real discussion.
+_COMMENT_AUTHOR_BLOCKLIST = frozenset({"AutoModerator", "[deleted]", "[removed]"})
+
+# Bodies that are deleted / removed — Reddit replaces the markdown with these literal strings.
+_DEAD_BODY_STRINGS = ("[deleted]", "[removed]")
+
+_BODY_MAX_CHARS = 800  # Per Anna's 2026-05-31 sizing — gives System ② enough raw material.
+
+
+def _strip_html_to_text(s: str) -> str:
+    """Strip HTML tags and decode minimal entities (Reddit-relevant ones).
+
+    Reddit's md→HTML output produces `<p>`, `<strong>`, `<em>`, `<a>`, `<blockquote>`, and
+    occasionally `<code>`. We don't render HTML to the user — we want plain text for AI prompts
+    and for the report's "💬 hot comments" preview. Whitespace normalized to single spaces.
+    """
+    # Replace common block-level closers with spaces so paragraph boundaries don't merge into
+    # one long blob (`</p><p>` would otherwise become contiguous).
+    s = re.sub(r"</(p|li|blockquote|h[1-6])>", " ", s, flags=re.IGNORECASE)
+    s = _HTML_TAG_RE.sub("", s)
+    # Decode the handful of entities Reddit emits.
+    s = (s.replace("&amp;", "&")
+           .replace("&#32;", " ")
+           .replace("&lt;", "<")
+           .replace("&gt;", ">")
+           .replace("&quot;", '"')
+           .replace("&#39;", "'")
+           .replace("&nbsp;", " "))
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def parse_old_reddit_comments(html: str, op_author: str | None = None,
+                              max_comments: int = 10) -> list[dict]:
+    """Parse one old.reddit comment page → top-N comments (sorted by score desc).
+
+    Filters out:
+    - AutoModerator and [deleted] / [removed] author posts (bot noise + dead content)
+    - Empty bodies / bodies that are literally "[deleted]" or "[removed]"
+
+    Each comment dict: {id, author, score, body, is_op, replies}
+    - body is plain text (HTML stripped), capped at _BODY_MAX_CHARS (800).
+    - is_op = author equals the post's OP author (op_author kwarg) — useful for filtering follow-up
+      replies in System ② drafting, where community responses matter more than OP's own threads.
+
+    Returns: at most max_comments items, sorted by score descending. Empty list on no matches.
+    """
+    # Collect every comment opening + the slice of HTML that "belongs to" each one (= up to the
+    # next comment opening or end of html). The slice is where we look for score + body.
+    matches = list(_COMMENT_OPEN_RE.finditer(html))
+    out: list[dict] = []
+    for i, m in enumerate(matches):
+        tag_body, fullname = m.groups()
+        next_start = matches[i + 1].start() if i + 1 < len(matches) else len(html)
+        slice_ = html[m.end():next_start]
+
+        author_m = re.search(r'data-author="([^"]*)"', tag_body)
+        author = author_m.group(1) if author_m else ""
+        if author in _COMMENT_AUTHOR_BLOCKLIST:
+            continue
+
+        score_m = _COMMENT_SCORE_RE.search(slice_)
+        score = int(score_m.group(1)) if score_m else 0
+
+        body_m = _COMMENT_BODY_RE.search(slice_)
+        body_raw = body_m.group(1) if body_m else ""
+        body = _strip_html_to_text(body_raw)
+        if not body or body in _DEAD_BODY_STRINGS:
+            continue
+        if len(body) > _BODY_MAX_CHARS:
+            body = body[:_BODY_MAX_CHARS].rstrip() + "…(truncated)"
+
+        replies_m = re.search(r'data-replies="(\d+)"', tag_body)
+        replies = int(replies_m.group(1)) if replies_m else 0
+
+        out.append({
+            "id": fullname[3:],          # strip "t1_" prefix
+            "fullname": fullname,
+            "author": author,
+            "score": score,
+            "body": body,
+            "is_op": bool(op_author) and author == op_author,
+            "replies": replies,
+        })
+
+    out.sort(key=lambda c: c["score"], reverse=True)
+    return out[:max_comments]
+
 
 def parse_old_reddit_html(html: str) -> list[dict]:
     """Parse one `old.reddit.com/r/<sub>/...` page into a list of post dicts.
@@ -259,6 +361,29 @@ class RedditSource(Source):
                     raw_snippet="",  # old.reddit's body excerpt is tricky to parse cleanly; leave empty.
                 ))
         return items
+
+    # ---- Comment enrichment (Anna 2026-05-31, called by runner after Top-N selection) ----
+    def fetch_post_comments(self, permalink: str, op_author: str | None = None,
+                            max_comments: int = 10) -> list[dict]:
+        """Fetch one post's comments page from old.reddit and return top-N by score.
+
+        permalink: from HotItem.source_native["permalink"] (e.g. "/r/SaaS/comments/abc/slug/")
+        op_author: from HotItem.author — used to flag is_op replies.
+        Failure (network / parse) → empty list (don't blow up the pipeline; comments are optional).
+        """
+        if not permalink:
+            return []
+        # Only old_html mode currently knows the bypass path; JSON mode would need a different URL.
+        if self.mode != "old_html":
+            return []
+        url = f"{OLD_HTML_BASE}{permalink.rstrip('/')}/"
+        headers = {"User-Agent": self._ua()}
+        try:
+            r = self._request_with_retry("GET", url, headers=headers)
+        except Exception as e:
+            print(f"[reddit:old_html] comments fetch failed for {permalink}: {e}")
+            return []
+        return parse_old_reddit_comments(r.text, op_author=op_author, max_comments=max_comments)
 
     # ---- mode: public / oauth (legacy JSON path) ----
     def _listing_path_json(self, sub: str) -> str:

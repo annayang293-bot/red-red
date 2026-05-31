@@ -1,5 +1,44 @@
-import { ReportItem, tierColor } from "@/lib/types";
+import { useState } from "react";
+import { ReportComment, ReportItem, tierColor } from "@/lib/types";
 import { useT } from "@/lib/i18n";
+
+/**
+ * "💬 热评" disclosure under each Row (Anna 2026-05-31).
+ *
+ * Collapsed by default to keep the list scannable; expands inline. Shows author + score per
+ * comment, OP marker, and truncated body. Designed for two readers:
+ *   - Anna: scanning for "this post is good because the comments confirm…" signals.
+ *   - System ② (later): consuming comments_summary as raw material for Xiaohongshu drafting.
+ */
+function CommentsDisclosure({ comments }: { comments: ReportComment[] }) {
+  const { t } = useT();
+  const [open, setOpen] = useState(false);
+  if (!comments?.length) return null;
+  return (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setOpen(!open)}
+        className="text-[11px] text-mut underline-offset-2 hover:text-terra hover:underline"
+      >
+        {open ? t("list.hideComments") : t("list.showCommentsTpl", { n: comments.length })}
+      </button>
+      {open && (
+        <ul className="mt-1 space-y-1.5 rounded-md border border-line/60 bg-[#fdf7ec] px-2.5 py-1.5">
+          {comments.map((c) => (
+            <li key={c.id} className="text-[12px] leading-snug text-ink/90">
+              <span className="font-semibold text-terra">{c.score >= 0 ? "↑" : "↓"}{Math.abs(c.score)}</span>
+              <span className="ml-1.5 text-mut">u/{c.author}</span>
+              {c.is_op && (
+                <span className="ml-1 rounded bg-terrasoft px-1 text-[9px] uppercase tracking-wide text-terra">OP</span>
+              )}
+              <span className="ml-1.5 text-ink/80">{c.body}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export function Row({
   item,
@@ -48,6 +87,7 @@ export function Row({
           )}
         </div>
         <div className="text-[13px] text-ink/80">{item.comment}</div>
+        {item.comments_summary && <CommentsDisclosure comments={item.comments_summary} />}
       </div>
     </div>
   );

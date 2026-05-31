@@ -1,3 +1,14 @@
+export type ReportComment = {
+  // Each entry mirrors what the Reddit comment parser produces (pipeline/sources/reddit_source.py).
+  // System ② (drafting) will consume these directly as raw material for Xiaohongshu posts.
+  id: string;
+  author: string;
+  score: number;
+  body: string;        // Plain text, ≤800 chars; may end with "…(truncated)"
+  is_op: boolean;      // True if the comment author == the original post's author
+  replies: number;
+};
+
 export type ReportItem = {
   id: string;   // Stable identity (used for star / React key) = string form of posts_archive.post_id
   rank: number; // Sort position within this report only — NOT the identity
@@ -12,6 +23,7 @@ export type ReportItem = {
   url: string;
   comment: string;
   is_new?: boolean; // true = new this run; false = post recurring; undefined = no run context (e.g. starred library)
+  comments_summary?: ReportComment[]; // Top-N comments from the original Reddit post (Anna 2026-05-31)
 };
 
 export type Report = {

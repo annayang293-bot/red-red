@@ -51,13 +51,26 @@ def select_review_fn():
 
 def _openai_prompt(items) -> str:
     # Prompt body stays in Chinese: the model is asked to produce Chinese tier names + critique + xhs_title.
+    # Comments enrichment (Anna 2026-05-31): when a post has community comments attached, include
+    # the top 3 (by score) as additional context. Community responses often surface the real angle —
+    # an OpenAI post with 1k upvotes but split-opinion comments is a different tier than one with
+    # unanimous praise. Comments come from source_native["comments"] (set by runner.py's enrich step).
     lines = []
     for it in items:
         snippet = (it.raw_snippet or it.title or "")[:280]
-        lines.append(f"- id={it.id} | 标题={it.title!r} | 内容={snippet!r} | 来源={it.source}")
+        line = f"- id={it.id} | 标题={it.title!r} | 内容={snippet!r} | 来源={it.source}"
+        sn = it.source_native or {}
+        comments = sn.get("comments") or []
+        if comments:
+            top3 = comments[:3]
+            # Compact each comment to ≤120 chars for the prompt (we don't need the full 800).
+            comment_strs = [f"({c.get('score', 0)}赞) {c.get('body', '')[:120]}" for c in top3]
+            line += " | 热评=" + " ｜ ".join(comment_strs)
+        lines.append(line)
     return (
-        "你在帮一个小红书博主筛选海外热点做选题。对每条内容:\n"
+        "你在帮一个小红书博主筛选海外热点做选题。对每条内容(部分带 top 3 热评作为社区上下文):\n"
         "1) 判断'迁移到小红书做选题'的潜力:强迁移=直接能做;中等迁移=要加工/看人设;弱迁移=开发圈内/暂不建议。\n"
+        "   **有热评的可以参考社区反应** —— 比如标题平淡但评论很激烈 → 可能是好选题;标题响亮但评论唱反调 → 谨慎。\n"
         "2) 给一句中文点评(为什么适合/不适合做小红书选题,≤40字)。\n"
         "3) 起一个中文小红书标题 xhs_title(口语化、有钩子,≤20字)。\n"
         '只输出 JSON:{"items":[{"id":"...","tier":"强迁移|中等迁移|弱迁移","comment":"...","xhs_title":"..."}]}。\n\n'

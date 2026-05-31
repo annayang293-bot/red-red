@@ -70,6 +70,8 @@ export const strings: Strings = {
     "list.unstarTitle": "取消收藏",
     "list.recurring": "🔁 老帖重现",
     "list.product_hunt": "Product Hunt",
+    "list.showCommentsTpl": "💬 看 {n} 条热评",
+    "list.hideComments": "💬 收起热评",
 
     // StarredTab
     "star.heading": "⭐ 精选库",
@@ -177,6 +179,8 @@ export const strings: Strings = {
     "list.unstarTitle": "Unstar",
     "list.recurring": "🔁 Seen before",
     "list.product_hunt": "Product Hunt",
+    "list.showCommentsTpl": "💬 show {n} hot comments",
+    "list.hideComments": "💬 hide comments",
 
     // StarredTab
     "star.heading": "⭐ Starred library",
