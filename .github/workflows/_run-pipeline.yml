@@ -54,7 +54,7 @@ jobs:
           cache-dependency-path: pipeline/requirements.txt
 
       - name: Install dependencies
-        run: pip install --require-hashes=false -r pipeline/requirements.txt
+        run: pip install -r pipeline/requirements.txt
 
       - name: Run pipeline
         # run_once.py prints the result JSON on its single stdout line; we tee it so it ends up
