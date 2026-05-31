@@ -42,8 +42,11 @@ import re as _re
 
 MEGA_SUB_REGISTRY: list[tuple[tuple[str, ...], list[str]]] = [
     # AI / LLM family — every report during testing had a strong-tier OpenAI item.
+    # Note: r/ArtificialIntelligence (camelCase, correct spelling) does NOT exist on Reddit
+    # — the actual mega-sub is r/artificial (singular, lowercase, ~1M subs). Fixed 2026-05-31
+    # after old.reddit.com testing returned 404 for the camelCase variant.
     (("ai", "llm", "gpt", "chatgpt", "claude", "openai", "人工智能", "大模型", "大语言模型"),
-     ["OpenAI", "ArtificialIntelligence"]),
+     ["OpenAI", "artificial"]),
     # Programming languages — flagship sub per language.
     (("python", "django", "flask"), ["Python"]),
     (("javascript", "typescript", "react", "vue", "node"), ["javascript"]),

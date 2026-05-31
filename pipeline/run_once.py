@@ -33,7 +33,10 @@ def build_sources(cfg: dict, subreddits: list[str]) -> list:
     """Build real data sources (Reddit + PH). subreddits is supplied by resolve_topic (LLM recommends per topic;
     falls back to defaults on failure)."""
     reddit_cfg = dict(cfg.get("reddit") or {})
-    reddit_cfg.setdefault("auth_mode", "public")
+    # Default to old_html since Reddit's 2025-11 anti-bot policy 403s the JSON API for our IP class
+    # (Anna 2026-05-31). The "public" / "oauth" JSON path is kept in RedditSource for if-and-when
+    # JSON access comes back or OAuth is wired in.
+    reddit_cfg.setdefault("auth_mode", "old_html")
     reddit_cfg["subreddits"] = subreddits
     return [
         RedditSource({"reddit": reddit_cfg}),
