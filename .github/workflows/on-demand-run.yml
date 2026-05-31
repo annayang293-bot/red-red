@@ -1,0 +1,26 @@
+# On-demand pipeline run.
+# Triggered manually from the GitHub Actions UI **or** programmatically via the REST API
+# (POST /repos/{owner}/{repo}/actions/workflows/on-demand-run.yml/dispatches) — which is exactly
+# what `web/pages/api/run.ts` does when the user clicks "开始跑" in the Vercel-hosted UI.
+#
+# Topic comes in as an input so the Vercel UI can let the human pick what to run; defaults to
+# the currently-active topic so the workflow is still useful from the GH Actions UI without
+# typing anything.
+name: On-demand pipeline run
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: Topic keyword to run.
+        required: true
+        type: string
+        default: 'AI 创业'
+
+jobs:
+  run:
+    uses: ./.github/workflows/_run-pipeline.yml
+    with:
+      topic: ${{ inputs.topic }}
+      triggered_by: manual
+    secrets: inherit

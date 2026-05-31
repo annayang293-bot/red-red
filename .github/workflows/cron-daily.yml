@@ -1,0 +1,22 @@
+# Daily scheduled pipeline run.
+# 09:00 America/Los_Angeles = 16:00 UTC (LA is UTC-8 in standard time / UTC-7 in DST). GitHub Actions
+# `schedule.cron` runs in UTC; the 1-hour DST drift is acceptable for a "fresh report each morning"
+# product. If we ever want exact 09:00 LA year-round, we'd need two schedules or a runtime guard.
+#
+# Topic is hard-coded here because `schedule` triggers don't accept inputs. If the active topic
+# changes, update this file (or move to a config-driven trigger, e.g. reading topics.active from DB).
+name: Cron — daily pipeline
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  # Allow manual trigger of the cron path too, for ops / one-off debugging without changing the topic.
+  workflow_dispatch:
+
+jobs:
+  run:
+    uses: ./.github/workflows/_run-pipeline.yml
+    with:
+      topic: 'AI 创业'
+      triggered_by: cron
+    secrets: inherit

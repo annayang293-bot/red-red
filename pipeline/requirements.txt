@@ -1,0 +1,4 @@
+# Pipeline runtime dependencies (Python 3.10+).
+# Kept minimal so cold-install in GitHub Actions stays fast.
+requests>=2.31,<3
+supabase>=2.18,<3

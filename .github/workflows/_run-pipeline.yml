@@ -1,0 +1,78 @@
+# Reusable workflow: invoked by callers (cron-daily, on-demand-run) to execute one pipeline run.
+#
+# Why reusable: keeps Python install / dependency / env wiring DRY across triggers. New triggers
+# (e.g. PR check, weekly digest) only need to write a thin caller; install + run steps are owned
+# here. Secret-bearing inputs are passed via `secrets: inherit` from the caller (so we don't
+# duplicate the secret list in two files).
+#
+# Contract: matches `python -m pipeline.run_once <topic> --triggered-by <triggered_by>` (see
+# pipeline/run_once.py). Exit code 0 on success, non-zero on pipeline failure → the run is
+# visible as a red ✗ in GH Actions UI.
+name: _Run pipeline (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      topic:
+        description: Topic keyword to run (e.g. "AI 创业").
+        required: true
+        type: string
+      triggered_by:
+        description: 'Source label written to runs.triggered_by; one of "manual" or "cron".'
+        required: true
+        type: string
+    # Caller passes secrets via `secrets: inherit`; we still declare them so the workflow_call
+    # surface is explicit and self-documenting.
+    secrets:
+      SUPABASE_URL:
+        required: true
+      SUPABASE_SECRET_KEY:
+        required: true
+      OPENAI_API_KEY:
+        required: true
+      REDDIT_USER_AGENT:
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install --require-hashes=false -r pipeline/requirements.txt
+
+      - name: Run pipeline
+        # run_once.py prints the result JSON on its single stdout line; we tee it so it ends up
+        # both in the GH Actions log AND captured for the summary step.
+        run: |
+          set -o pipefail
+          python -m pipeline.run_once "${{ inputs.topic }}" --triggered-by "${{ inputs.triggered_by }}" \
+            | tee /tmp/run_once_out.json
+
+      - name: Summarize result
+        if: always()
+        run: |
+          if [ -s /tmp/run_once_out.json ]; then
+            {
+              echo "### Pipeline result"
+              echo
+              echo '```json'
+              tail -n 1 /tmp/run_once_out.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -31,14 +31,17 @@ export default function Home() {
   );
 
   // runId not passed = latest; passed = that specific run (after a manual run, read the **returned**
-  // run_id rather than falling back to latest).
-  const loadReport = useCallback(async (runId?: number | string) => {
+  // run_id rather than falling back to latest). Returns the loaded Report (or null) so callers that
+  // need the just-fetched payload don't have to wait a render cycle to read the React state.
+  const loadReport = useCallback(async (runId?: number | string): Promise<Report | null> => {
     const url = runId ? `/api/run/${runId}` : "/api/run/latest";
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Report load failed (${res.status})`);
     const r = await res.json();
-    setReport(r.report ?? null);
+    const loaded: Report | null = r.report ?? null;
+    setReport(loaded);
     setScrapedSubreddits(Array.isArray(r.scrapedSubreddits) ? r.scrapedSubreddits : []);
+    return loaded;
   }, []);
 
   const loadStarred = useCallback(async () => {
@@ -91,30 +94,79 @@ export default function Home() {
     [starredIds, loadStarred]
   );
 
+  // Pipeline now runs as a GitHub Actions workflow_run (Anna 2026-05-31, A plan): /api/run no longer
+  // waits for completion — it dispatches the workflow and returns immediately. We poll
+  // /api/runs/latest-id every POLL_MS until the active topic's latest run_id is strictly greater than
+  // the baseline (captured before dispatch), then load that run's report. Hard timeout = POLL_TIMEOUT_MS;
+  // beyond that we surface a "check GH Actions" message rather than spin forever.
   const runPipeline = useCallback(
     async (topic: string) => {
+      const POLL_MS = 5000;
+      const POLL_TIMEOUT_MS = 120_000;
+
       setRunning(true);
       setRunMsg(t("run.msg.running"));
+
+      // Baseline: the active topic's current latest run_id (could be null = "no runs yet"). Captured
+      // BEFORE dispatch so a successful workflow_run always satisfies `newRunId > baseline`.
+      let baselineRunId: number | null = null;
       try {
-        const r = await fetch("/api/run", {
+        const base = await fetch("/api/runs/latest-id").then((r) => r.json());
+        baselineRunId =
+          typeof base?.run_id === "number" ? base.run_id : null;
+      } catch {
+        // Treat baseline-read failures as null — first new run will still trigger the loadReport.
+        baselineRunId = null;
+      }
+
+      try {
+        const dispatch = await fetch("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ topic }),
         }).then((res) => res.json());
-        if (r.ok) {
-          // Read this run's report + refresh the history list (so the new run appears in the "History" tab).
-          await Promise.all([loadReport(r.run_id), loadRuns()]);
-          const failed =
-            Array.isArray(r.failed_sources) && r.failed_sources.length
-              ? t("run.msg.failedSourcesTpl", { srcs: r.failed_sources.join(", ") })
-              : "";
-          setRunMsg(t("run.msg.doneTpl", { top: r.top, failed }));
-        } else {
-          setRunMsg(`${t("run.msg.failedPrefix")}${r.error || r.message || t("run.msg.unknownError")}`);
+        if (!dispatch.ok) {
+          setRunMsg(
+            `${t("run.msg.failedPrefix")}${dispatch.error || dispatch.message || t("run.msg.unknownError")}`,
+          );
+          setRunning(false);
+          return;
+        }
+
+        const startedAt = Date.now();
+        // Poll until a new run lands or we time out. Errors on a single poll tick are swallowed and
+        // retried on the next tick — transient 5xx shouldn't abort the whole wait.
+        for (;;) {
+          if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+            setRunMsg(
+              t("run.msg.timeoutTpl", {
+                seconds: Math.round(POLL_TIMEOUT_MS / 1000),
+              }),
+            );
+            setRunning(false);
+            return;
+          }
+          await new Promise((r) => setTimeout(r, POLL_MS));
+          try {
+            const cur = await fetch("/api/runs/latest-id").then((r) => r.json());
+            const newRunId: number | null =
+              typeof cur?.run_id === "number" ? cur.run_id : null;
+            if (newRunId != null && (baselineRunId == null || newRunId > baselineRunId)) {
+              // loadReport now returns the just-fetched payload — use it directly (the React `report`
+              // state in this closure is stale).
+              const [loaded] = await Promise.all([loadReport(newRunId), loadRuns()]);
+              setRunMsg(
+                t("run.msg.doneTpl", { top: loaded?.items.length ?? "", failed: "" }),
+              );
+              setRunning(false);
+              return;
+            }
+          } catch {
+            // swallow & retry — see comment above
+          }
         }
       } catch (e) {
         setRunMsg(`${t("run.msg.failedPrefix")}${(e as Error).message}`);
-      } finally {
         setRunning(false);
       }
     },

@@ -1,77 +1,69 @@
-/** POST /api/run { topic } — trigger one pipeline run (Node spawns a Python subprocess) → DB → return run summary.
+/** POST /api/run { topic } — dispatch a GitHub Actions workflow_run for the pipeline.
  *
- *  Architecture: Node doesn't reimplement the pipeline; it spawns `python -m pipeline.run_once <topic>`
- *  as a subprocess (single run 30–60s, fits within Vercel Fluid's 300s budget). The subprocess's last
- *  stdout line is the result JSON. */
+ *  Architecture change (A plan, 2026-05-31): on Vercel we can't spawn long-running Python
+ *  subprocesses (Hobby Fluid budget is too tight + Vercel IPs get throttled by Reddit's
+ *  anti-bot). Instead, this endpoint hands off to a GitHub Actions workflow that runs
+ *  `python -m pipeline.run_once <topic>` on a GitHub-hosted runner (residential-IP class,
+ *  not throttled by Reddit; runs 30–90s; writes the result to Supabase).
+ *
+ *  Contract change: this used to wait for the pipeline to finish and return the run summary
+ *  inline. It now returns immediately after the dispatch is accepted by GitHub (HTTP 204);
+ *  the UI polls `/api/runs/latest-id` to detect when the new run lands in Supabase, then
+ *  loads the report. Frontend timeout: ~120s.
+ */
 import type { NextApiRequest, NextApiResponse } from "next";
-import { spawn } from "child_process";
-import path from "path";
 import { ensureMethod, failError } from "@/lib/api";
 
-// next dev/build cwd = web/; the pipeline package lives one level up at system1-app/.
-const PIPELINE_CWD = path.resolve(process.cwd(), "..");
-const PYTHON_BIN = process.env.PYTHON_BIN || "python3";
-const RUN_TIMEOUT_MS = 180_000;
-
-type RunResult = {
-  ok: boolean;
-  run_id?: number;
-  topic?: string;
-  status?: string;
-  ai_mode?: string;
-  posts?: number;
-  top?: number;
-  failed_sources?: string[];
-  sanity_status?: string;
-  error?: string;
-};
-
-function runPipeline(topic: string): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(PYTHON_BIN, ["-m", "pipeline.run_once", topic], {
-      cwd: PIPELINE_CWD,
-      env: process.env,
-    });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (d) => (out += d.toString()));
-    child.stderr.on("data", (d) => (err += d.toString()));
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("pipeline timed out (>180s)"));
-    }, RUN_TIMEOUT_MS);
-
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      const lastLine = out.trim().split("\n").filter(Boolean).pop() || "";
-      try {
-        resolve(JSON.parse(lastLine) as RunResult);
-      } catch {
-        reject(
-          new Error(
-            `pipeline output could not be parsed (exit ${code}): ${lastLine || err.slice(-500) || "(empty)"}`
-          )
-        );
-      }
-    });
-  });
-}
+const GITHUB_API = "https://api.github.com";
+// Hardcoded for this project (Anna 2026-05-31): single repo, single workflow file. Keeps the
+// API surface focused — there's no scenario where we'd dispatch a different repo / workflow
+// from this endpoint.
+const REPO_OWNER = "annayang293-bot";
+const REPO_NAME = "red-red";
+const WORKFLOW_FILE = "on-demand-run.yml";
+const WORKFLOW_REF = "main";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ensureMethod(req, res, ["POST"])) return;
   const topic = String(req.body?.topic ?? "").trim();
   if (!topic) return res.status(400).json({ error: "missing_topic" });
+
+  const pat = process.env.GITHUB_PAT;
+  if (!pat) {
+    return res
+      .status(500)
+      .json({ error: "missing_github_pat", message: "GITHUB_PAT env var not set on Vercel." });
+  }
+
   try {
-    const result = await runPipeline(topic);
-    if (!result.ok) {
-      return res.status(502).json({ error: "pipeline_failed", ...result });
+    // POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches
+    // Success = HTTP 204 No Content. Anything else is a failure (most often 401 wrong PAT scope,
+    // 404 wrong workflow filename, or 422 ref/input mismatch).
+    const ghRes = await fetch(
+      `${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${pat}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+          "User-Agent": "red-red-vercel-dispatch",
+        },
+        body: JSON.stringify({ ref: WORKFLOW_REF, inputs: { topic } }),
+      }
+    );
+
+    if (ghRes.status === 204) {
+      return res.status(200).json({ ok: true, dispatched: true, topic });
     }
-    res.status(200).json(result);
+    // GitHub returns a JSON body with `message` on error responses.
+    const errBody = await ghRes.text();
+    return res.status(502).json({
+      error: "dispatch_failed",
+      status: ghRes.status,
+      message: errBody.slice(0, 500),
+    });
   } catch (e) {
     failError(res, e);
   }
