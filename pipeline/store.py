@@ -206,10 +206,16 @@ class SupabaseStore:
                 # redundant UPDATE.
                 if any((nr.get("source"), nr.get("source_native_id")) == key for nr in new_rows):
                     continue
-                self._exec(
-                    self.c.table("posts_archive")
-                    .update({"comments_summary": new_comments})
-                    .eq("post_id", pid))
+                # Failure mode: comments_summary is an enrichment, not core history. A Supabase blip /
+                # PostgREST 5xx on this UPDATE should not collapse the whole run into status=failed —
+                # align with _enrich_top_with_comments' "log and move on" policy in runner.py.
+                try:
+                    self._exec(
+                        self.c.table("posts_archive")
+                        .update({"comments_summary": new_comments})
+                        .eq("post_id", pid))
+                except Exception as e:
+                    print(f"[store] comments_summary update failed for post_id={pid}: {e}")
 
         # report_top20: reference the real post_id (top posts must be in key_to_pid: either pre-existing or just inserted)
         rep_rows = []

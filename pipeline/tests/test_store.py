@@ -246,6 +246,56 @@ def test_report_top20_carries_per_run_comment():
     print("✅ test_report_top20_carries_per_run_comment")
 
 
+def test_comments_summary_update_failure_does_not_break_run():
+    """🐞 Regression (Rex 🔴 on 4c56f15): comments_summary refresh UPDATE on existing posts is an
+    enrichment, not core history. A Supabase blip / PostgREST 5xx on that UPDATE must NOT bubble
+    out and collapse the whole run into status=failed — runner.run_once would then capture
+    `{"ok": False}` and discard a perfectly good scored/ranked report. Aligned with how
+    _enrich_top_with_comments in runner.py handles its own fetch failures: log and continue.
+    """
+    res = _make_result()
+    # Attach a comments payload to a Top item's source_native so comments_summary becomes non-None
+    # and the UPDATE branch is exercised (existing rows don't get re-inserted, so the only write
+    # for them is the UPDATE we just hardened).
+    assert res.top, "need at least one Top item to exercise the comments-summary path"
+    target_item = res.top[0]["item"]
+    target_item.source_native = {**(target_item.source_native or {}),
+                                 "comments": [{"score": 5, "author": "u", "body": "hi",
+                                               "is_op": False, "replies": []}]}
+    rows = runresult_to_rows(res)
+
+    class _BoomOnUpdateClient(FakeClient):
+        def _resolve(self, q):
+            if q.table == "posts_archive" and q.op == "update":
+                # Record the call so we can assert it was attempted, then raise — mimics a transient
+                # PostgREST 5xx / network blip.
+                self.calls.append((q.table, q.op, q.payload))
+                raise RuntimeError("simulated PostgREST 5xx on comments_summary UPDATE")
+            return super()._resolve(q)
+
+    fake = _BoomOnUpdateClient()
+    # Preload the Top item as already in posts_archive so save() takes the UPDATE branch (not insert).
+    fake.existing_posts = [{
+        "post_id": 4242,
+        "source": target_item.source,
+        "source_native_id": target_item.source_native_id,
+    }]
+
+    # Must not raise — failure on the enrichment UPDATE is logged, not propagated.
+    run_id = SupabaseStore(fake).save(res)
+    assert run_id == 10
+
+    # The UPDATE on the targeted post was attempted.
+    update_calls = [c for c in fake.calls
+                    if c[0] == "posts_archive" and c[1] == "update"]
+    assert update_calls, "should have attempted at least one comments_summary UPDATE"
+    # And the core write path (report_top20) still completed despite the UPDATE failure.
+    rep_calls = [c for c in fake.calls if c[0] == "report_top20" and c[1] == "insert"]
+    assert rep_calls, "report_top20 must still be written when only the enrichment UPDATE fails"
+    assert len(rep_calls[0][2]) == len(res.top)
+    print("✅ test_comments_summary_update_failure_does_not_break_run")
+
+
 def test_ensure_topic_reuses_matching_active():
     """Same-keyword active topic exists → reuse, don't create a new one."""
     fake = FakeClient()
