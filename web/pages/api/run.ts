@@ -23,10 +23,26 @@ const REPO_NAME = "red-red";
 const WORKFLOW_FILE = "on-demand-run.yml";
 const WORKFLOW_REF = "main";
 
+// Topic allowlist — defense-in-depth alongside the workflow's env-indirection fix
+// (Rex Phase 1, 2026-05-31). The workflow no longer interpolates `${{ inputs.topic }}` into
+// a shell `run:` block, so injection is already neutralized at the YAML layer. But /api/run is
+// public + unauthenticated, so we also reject obviously hostile / non-topic-looking inputs at
+// the API layer: only Unicode letters/digits, whitespace, and `_ -` survive. That covers
+// "AI 创业", "AI startup", "indie-hackers" etc. while rejecting `;`, backticks, quotes, `$`, `|`,
+// shell expansion characters, etc.
+const TOPIC_ALLOWLIST = /^[\p{L}\p{N}\p{Zs}_\-]{1,80}$/u;
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ensureMethod(req, res, ["POST"])) return;
   const topic = String(req.body?.topic ?? "").trim();
   if (!topic) return res.status(400).json({ error: "missing_topic" });
+  if (!TOPIC_ALLOWLIST.test(topic)) {
+    return res.status(400).json({
+      error: "invalid_topic",
+      message:
+        "Topic must be 1–80 chars of letters, digits, spaces, '_', or '-' only.",
+    });
+  }
 
   const pat = process.env.GITHUB_PAT;
   if (!pat) {

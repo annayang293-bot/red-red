@@ -17,6 +17,9 @@ on:
         type: string
         default: 'AI 创业'
 
+permissions:
+  contents: read
+
 jobs:
   run:
     uses: ./.github/workflows/_run-pipeline.yml

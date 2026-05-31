@@ -13,6 +13,9 @@ on:
   # Allow manual trigger of the cron path too, for ops / one-off debugging without changing the topic.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   run:
     uses: ./.github/workflows/_run-pipeline.yml

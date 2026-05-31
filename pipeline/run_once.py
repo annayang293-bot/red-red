@@ -29,6 +29,25 @@ from .topic_resolve import resolve_topic
 DEFAULT_SUBREDDITS = ["OpenAI", "SaaS", "Entrepreneur", "startups", "artificial", "indiehackers"]
 
 
+def _is_degraded(failed_sources: list, scored_count: int, source_count: int) -> bool:
+    """Should this run's exit code be 1 (degraded → workflow red)?
+
+    Pure helper so the policy is easy to unit-test without spinning up Supabase / OpenAI / etc.
+    Two signals indicate a degraded run worth alerting on:
+      (a) every source instance failed to fetch — total upstream outage.
+      (b) the scored set is empty AND at least one source failed — the 3-gate filter had
+          nothing to chew on because the only data we got was from a source that couldn't
+          produce hot items (run 52 pattern: Reddit blocked + PH-only items can't pass the
+          relevance gate, so top is filled only from PH quota and posts == 0).
+
+    A legitimately quiet day (all sources up, just no hot items) leaves failed_sources empty,
+    so neither branch fires — keep exit 0 so the workflow stays green.
+    """
+    all_sources_failed = len(failed_sources) == source_count and source_count > 0
+    no_useful_posts = scored_count == 0 and bool(failed_sources)
+    return all_sources_failed or no_useful_posts
+
+
 def build_sources(cfg: dict, subreddits: list[str]) -> list:
     """Build real data sources (Reddit + PH). subreddits is supplied by resolve_topic (LLM recommends per topic;
     falls back to defaults on failure)."""
@@ -107,6 +126,9 @@ def main(argv=None) -> int:
             # Attach the full LLM-chosen subreddit list to res so store writes it into runs.subreddits
             res.subreddits = list(mapping["subreddits"])
             run_id = SupabaseStore(get_client()).save(res)
+        # Wrap the result line — same JSON shape as before. `ok` stays a function of "did we
+        # write a row to Supabase", not "did the report have content"; the exit-code policy below
+        # is what gates the GH Actions ✅/✗ signal.
         out = {
             "ok": True, "run_id": run_id, "topic": res.topic,
             "status": res.status, "ai_mode": res.ai_mode,
@@ -117,6 +139,15 @@ def main(argv=None) -> int:
             "keywords_count": len(mapping["keywords"]),
         }
         print(json.dumps(out, ensure_ascii=False))
+        # Exit-code policy: degraded run → exit 1 so the GH workflow_run goes red (and Anna
+        # sees the problem instead of the run 52 silent-green pattern). See _is_degraded.
+        if _is_degraded(res.failed_sources, res.scored_count, len(sources)):
+            print(
+                f"[run_once] degraded run: failed_sources={res.failed_sources!r}, "
+                f"scored_count={res.scored_count}; exiting 1 so the workflow goes red.",
+                file=sys.stderr,
+            )
+            return 1
         return 0
     except Exception as e:  # noqa: BLE001 — funnel failures into JSON for Node; don't let stacks spew onto stdout
         print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))

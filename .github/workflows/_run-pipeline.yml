@@ -33,6 +33,19 @@ on:
       REDDIT_USER_AGENT:
         required: true
 
+# Defense-in-depth lockdowns (Rex Phase 1, 2026-05-31):
+#  - permissions: lock GITHUB_TOKEN to read-only (we only checkout; no push / no PR / no release).
+#  - concurrency.group: serialize runs of the same topic across cron + manual dispatch so a slow
+#    cron + a follow-up manual click don't both write a duplicate run to Supabase. cancel-in-progress
+#    is false so the second dispatch queues behind the first instead of canceling it (we'd rather
+#    burn 25s of runner time than swallow a user-initiated click).
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ inputs.topic }}
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -57,11 +70,21 @@ jobs:
         run: pip install -r pipeline/requirements.txt
 
       - name: Run pipeline
-        # run_once.py prints the result JSON on its single stdout line; we tee it so it ends up
-        # both in the GH Actions log AND captured for the summary step.
+        # CRITICAL: inputs.topic comes from a public, unauthenticated /api/run endpoint. Routing
+        # ${{ inputs.* }} directly into a `run:` block would let an attacker break out of the
+        # quoted string and execute arbitrary shell on the runner (catastrophic post-A2: that
+        # runner is Anna's laptop). The fix is the GitHub-recommended env-indirection pattern —
+        # `${{ ... }}` is expanded into env vars at compile time, then the shell sees only the
+        # `"$VAR"` syntax, which it parses as a normal parameter expansion (no template
+        # injection). The /api/run handler ALSO regex-validates topic before dispatching — both
+        # layers must be in place.
+        # See: https://github.blog/security/supply-chain-security/four-tips-to-keep-your-github-actions-workflows-secure/
+        env:
+          TOPIC: ${{ inputs.topic }}
+          TRIGGERED_BY: ${{ inputs.triggered_by }}
         run: |
           set -o pipefail
-          python -m pipeline.run_once "${{ inputs.topic }}" --triggered-by "${{ inputs.triggered_by }}" \
+          python -m pipeline.run_once "$TOPIC" --triggered-by "$TRIGGERED_BY" \
             | tee /tmp/run_once_out.json
 
       - name: Summarize result

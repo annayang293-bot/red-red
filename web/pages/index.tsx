@@ -107,16 +107,24 @@ export default function Home() {
       setRunning(true);
       setRunMsg(t("run.msg.running"));
 
-      // Baseline: the active topic's current latest run_id (could be null = "no runs yet"). Captured
+      // Baseline: the active topic's current latest run_id (null = topic has no runs yet). Captured
       // BEFORE dispatch so a successful workflow_run always satisfies `newRunId > baseline`.
-      let baselineRunId: number | null = null;
+      //
+      // CRITICAL (Rex Phase 1): distinguish "topic has no runs" (server returned {run_id: null})
+      // from "couldn't reach server" (network / 5xx). If we collapse the latter to null, the
+      // polling loop's `baselineRunId == null` branch would treat the *existing* latest run as
+      // "new" on the first poll tick — the user gets shown a stale report and told "✅ done"
+      // before the dispatched workflow has even started.
+      let baselineRunId: number | null;
       try {
-        const base = await fetch("/api/runs/latest-id").then((r) => r.json());
-        baselineRunId =
-          typeof base?.run_id === "number" ? base.run_id : null;
-      } catch {
-        // Treat baseline-read failures as null — first new run will still trigger the loadReport.
-        baselineRunId = null;
+        const baseRes = await fetch("/api/runs/latest-id");
+        if (!baseRes.ok) throw new Error(`baseline HTTP ${baseRes.status}`);
+        const base = await baseRes.json();
+        baselineRunId = typeof base?.run_id === "number" ? base.run_id : null;
+      } catch (e) {
+        setRunMsg(`${t("run.msg.failedPrefix")}${(e as Error).message}`);
+        setRunning(false);
+        return;
       }
 
       try {
@@ -152,9 +160,24 @@ export default function Home() {
             const newRunId: number | null =
               typeof cur?.run_id === "number" ? cur.run_id : null;
             if (newRunId != null && (baselineRunId == null || newRunId > baselineRunId)) {
-              // loadReport now returns the just-fetched payload — use it directly (the React `report`
-              // state in this closure is stale).
-              const [loaded] = await Promise.all([loadReport(newRunId), loadRuns()]);
+              // loadReport's return value is the success signal (we need the items count for
+              // doneTpl, and the new report is the user-visible outcome). loadRuns is a
+              // best-effort sidecar — if it fails, the History tab will be one click behind
+              // but the user's current report is correct. Don't let a History tab refresh
+              // failure mask a successful pipeline run.
+              let loaded: Report | null = null;
+              try {
+                loaded = await loadReport(newRunId);
+              } catch (e) {
+                setRunMsg(
+                  `${t("run.msg.failedPrefix")}${(e as Error).message}`,
+                );
+                setRunning(false);
+                return;
+              }
+              loadRuns().catch((e) =>
+                console.warn("loadRuns refresh failed after run:", e),
+              );
               setRunMsg(
                 t("run.msg.doneTpl", { top: loaded?.items.length ?? "", failed: "" }),
               );
