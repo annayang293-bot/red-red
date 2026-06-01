@@ -287,6 +287,96 @@ def test_sanity_check_surfaces_video_transcribe_failed():
     print("✅ test_sanity_check_surfaces_video_transcribe_failed")
 
 
+def test_e2e_video_post_gets_transcribed_through_pipeline():
+    """🐞 Regression (Anna 2026-06-01): full run_pipeline pass with a `hosted:video` post in
+    the fixture. The transcribe module is mocked so this test is pure-logic, no network. We
+    assert that:
+      1. The video post survives the score/filter/Top-N selection.
+      2. Its source_native carries `transcript` / `transcript_lang` / `transcript_cost_usd`
+         AFTER the pipeline (i.e. _enrich_top_with_transcripts ran on it).
+      3. `runresult_to_rows` lifts those onto the posts_archive row dict (i.e. they will
+         actually persist via the new 0008 columns).
+      4. The AI-review prompt builder uses the transcript as "content" — verifying the
+         ai_review.py change too.
+    """
+    from unittest.mock import patch
+    from pipeline.store import runresult_to_rows
+    from pipeline.ai_review import _openai_prompt
+
+    # Build a fixture: existing AI items (so the relevance gate has something to chew on) +
+    # one video post about AI startups (so it passes the relevance gate too).
+    items = _reddit_items()   # 18 AI-relevant + 2 off-topic; matches existing test pattern.
+    video = HotItem(
+        id=make_id("reddit", "hinton-video"),
+        dedup_key=canonical_url("https://www.reddit.com/r/OpenAI/comments/hinton-video/x/"),
+        title="Geoffrey Hinton thinks AI startup founders should care about consciousness",
+        source="reddit",
+        source_native_id="hinton-video",
+        url="https://www.reddit.com/r/OpenAI/comments/hinton-video/x/",
+        author="u",
+        published_at=to_iso(NOW - timedelta(hours=2)),
+        captured_at=NOW.isoformat(),
+        lang="en",
+        media_type="video",
+        # Dominant engagement so it's locked into Top-N (the existing fixture's r0 starts at
+        # 2000 likes / 500 comments; bumping well past that to keep the test deterministic).
+        raw_metrics={"likes": 5000, "upvotes": 5000, "comments": 1200, "saves": 0},
+        source_native={
+            "subreddit": "OpenAI",
+            "post_type": "hosted:video",
+            "content_url": "https://v.redd.it/16akzxundn4h1",
+            "permalink": "/r/OpenAI/comments/hinton-video/x/",
+        },
+        tags=["OpenAI"],
+        raw_snippet="",   # video posts have empty body — transcript should fill the gap
+    )
+
+    def fake_transcribe(source_native):
+        return {
+            "text": "Yes, I do. AI consciousness is here. Founders should care.",
+            "language": "english",
+            "duration_seconds": 76.0,
+            "cost_usd": 0.0076,
+        }
+
+    with patch("pipeline.transcribe.transcribe_reddit_video", side_effect=fake_transcribe):
+        res = run_pipeline("AI startup", [StubSource("reddit", items + [video])], now=NOW)
+
+    # (1) Video survived to Top-N (we put it at 1500/400 engagement, dominant in the fixture).
+    top_ids = [r["item"].source_native_id for r in res.top]
+    assert "hinton-video" in top_ids, top_ids
+
+    # (2) source_native got the 3 transcript fields written by _enrich_top_with_transcripts.
+    video_in_top = next(r["item"] for r in res.top if r["item"].source_native_id == "hinton-video")
+    sn = video_in_top.source_native
+    assert "Yes, I do" in sn["transcript"]
+    assert sn["transcript_lang"] == "english"
+    assert abs(sn["transcript_cost_usd"] - 0.0076) < 1e-9
+
+    # (3) runresult_to_rows lifts those onto the row dict.
+    rows = runresult_to_rows(res)
+    video_row = next(p for p in rows["posts"] if p["source_native_id"] == "hinton-video")
+    assert "Yes, I do" in (video_row["transcript"] or "")
+    assert video_row["transcript_lang"] == "english"
+    assert video_row["transcript_cost_usd"] == 0.0076
+    # Non-video Top-N items in the row set don't get a transcript value — they stay None.
+    non_video_rows = [p for p in rows["posts"] if p["source_native_id"] != "hinton-video"]
+    assert any(p.get("transcript") is None for p in non_video_rows)
+
+    # (4) The OpenAI prompt builder uses the transcript instead of raw_snippet for this item.
+    prompt = _openai_prompt([video_in_top])
+    assert "视频转录=" in prompt, prompt
+    assert "Yes, I do" in prompt
+    # And it does NOT show "内容=" on the video's line (we replaced the label).
+    video_line = next(ln for ln in prompt.splitlines() if "Hinton" in ln)
+    assert "视频转录" in video_line and "内容=" not in video_line, video_line
+
+    # (5) Sanity has no `video_transcribe_failed` anomaly because the mock returned text.
+    assert not any("video_transcribe_failed" in a for a in res.sanity["anomalies"]), res.sanity["anomalies"]
+
+    print(f"✅ test_e2e_video_post_gets_transcribed_through_pipeline (top={len(res.top)}, transcript propagated)")
+
+
 def test_enrich_top_with_transcripts_can_be_disabled_via_cfg():
     """`cfg.transcribe.enabled = False` short-circuits the loop without calling the module —
     useful for prod kill-switching if Whisper rates spike."""
