@@ -500,8 +500,9 @@ class RedditSource(Source):
         excluded_flairs = [f.lower() for f in self.rc.get("excluded_flairs", [])]
 
         # harshmaur's startUrls accepts a list of subreddit *listing* URLs (e.g. /r/X/hot/).
-        # `searchSort` honors the sort segment in those URLs; we still pass it explicitly because
-        # harshmaur respects the field when present.
+        # `searchSort` accepts only lowercase values per the actor's input schema
+        # ("relevance" / "hot" / "top" / "new" / "comments"). Capitalized "Hot" gets the
+        # actor to 400 "invalid-input" before it even starts; verified live in run 53 dispatch.
         start_urls = [{"url": f"https://www.reddit.com/r/{s}/{listing}/"} for s in subs]
         payload = {
             "startUrls": start_urls,
@@ -516,7 +517,7 @@ class RedditSource(Source):
             "maxCommentsPerPost": 0,
             "maxCommentsCount": 0,
             "maxCommunitiesCount": 0,
-            "searchSort": listing.capitalize(),
+            "searchSort": listing,
             "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
         }
         result = self._apify_run("listing", payload, token=token)

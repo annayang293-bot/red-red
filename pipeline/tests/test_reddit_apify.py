@@ -255,6 +255,53 @@ def test_listing_missing_subs_marked_failed():
     print("✅ test_listing_missing_subs_marked_failed")
 
 
+def test_listing_payload_sends_lowercase_search_sort():
+    """🐞 Regression (run 53 prod dispatch, 2026-05-31): harshmaur's input schema rejects
+    capitalized sort values with HTTP 400 ("Field input.searchSort must be equal to one of
+    the allowed values: 'relevance', 'hot', 'top', 'new', 'comments'"). We used to call
+    `listing.capitalize()` because some Reddit docs use capitalized form — but the actor's
+    schema validator is strict lowercase. Lock it in.
+
+    Also asserts the rest of the listing payload shape (listing-only, no comments) so a
+    future "let's just include comments inline" refactor needs to update the test
+    deliberately.
+    """
+    captured: dict = {}
+
+    def fake_request(method, url, **kw):
+        if method == "POST" and "/runs" in url:
+            import json as _json
+            captured["payload"] = _json.loads(kw["data"].decode("utf-8"))
+            return _FakeResp({"data": {"id": "run_x"}}, 201)
+        if method == "GET" and "/runs/" in url:
+            return _FakeResp({"data": {"status": "SUCCEEDED", "id": "run_x",
+                                       "defaultDatasetId": "ds_x", "usageTotalUsd": 0.1}})
+        if method == "GET" and "/datasets/" in url:
+            return _FakeResp([])
+        raise AssertionError(f"unexpected {method} {url}")
+
+    with _env(APIFY_TOKEN="apify_test_token"), \
+         patch("pipeline.sources.reddit_source.requests.request", side_effect=fake_request):
+        src = RedditSource({"reddit": {
+            "auth_mode": "apify",
+            "subreddits": ["OpenAI", "SaaS"],
+            "listing": "hot",
+            "fetch_limit_per_sub": 30,
+        }})
+        src.fetch()
+    payload = captured["payload"]
+    assert payload["searchSort"] == "hot", payload["searchSort"]   # lowercase, NOT "Hot"
+    # Listing must NOT request comments — Top-N comments are a separate Apify call.
+    assert payload["crawlCommentsPerPost"] is False, payload
+    assert payload["maxCommentsPerPost"] == 0, payload
+    # All 6 subreddits passed through as URLs in startUrls.
+    urls = [u["url"] for u in payload["startUrls"]]
+    assert urls == ["https://www.reddit.com/r/OpenAI/hot/",
+                    "https://www.reddit.com/r/SaaS/hot/"], urls
+    assert payload["maxPostsCount"] == 30
+    print("✅ test_listing_payload_sends_lowercase_search_sort")
+
+
 def test_listing_filters_stickied_and_flair():
     """Stickied posts are dropped; flair on the excluded list is dropped; the rest survive."""
     fake_items = [
