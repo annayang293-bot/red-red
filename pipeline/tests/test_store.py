@@ -323,6 +323,107 @@ def test_ensure_topic_other_active_fails_loud():
     print("✅ test_ensure_topic_other_active_fails_loud")
 
 
+def test_save_updates_transcript_on_existing_posts():
+    """🐞 Regression (run 57 prod, 2026-06-01): when a video post re-enters Top-N on a later
+    run, the row in posts_archive already exists, so the INSERT path doesn't fire — but the
+    pre-fix UPDATE path only carried `comments_summary`, so the just-computed transcript /
+    transcript_lang / transcript_cost_usd never made it to DB. Verified live: run 57 logged
+    `[transcribe] ok: lang=english dur=76.05s cost=$0.0076` but the row's transcript stayed
+    NULL.
+
+    Fix: extend the UPDATE patch to include the 3 transcript columns when the new row has them.
+    """
+    res = _make_result()
+    rows = runresult_to_rows(res)
+    # Pretend EVERY top-item post is pre-existing in DB with NULL transcript (the run-57 scenario).
+    top_pids = {(r["item"].source, r["item"].source_native_id): 5000 + i
+                for i, r in enumerate(res.top)}
+    fake = FakeClient()
+    fake.existing_posts = [{"post_id": pid, "source": s, "source_native_id": nid}
+                           for (s, nid), pid in top_pids.items()]
+    # Inject a transcript onto the first top item so we know which row's UPDATE patch to inspect.
+    target = res.top[0]["item"]
+    target.source_native = {**(target.source_native or {}),
+                            "transcript": "Yes, I do.",
+                            "transcript_lang": "english",
+                            "transcript_cost_usd": 0.0076}
+    SupabaseStore(fake).save(res)
+
+    # An UPDATE call for the targeted post_id should carry the 3 transcript fields.
+    target_pid = top_pids[(target.source, target.source_native_id)]
+    update_calls = [c for c in fake.calls
+                    if c[0] == "posts_archive" and c[1] == "update"
+                    # The fake's _Query records eq filters on `filters` but call tuples don't carry them;
+                    # we approximate by picking any UPDATE that includes transcript-bearing payload.
+                    and isinstance(c[2], dict) and "transcript" in c[2]]
+    assert update_calls, f"no UPDATE carried transcript; saw: {[c[2] for c in fake.calls if c[1]=='update']}"
+    payload = update_calls[0][2]
+    assert payload["transcript"] == "Yes, I do."
+    assert payload["transcript_lang"] == "english"
+    assert payload["transcript_cost_usd"] == 0.0076
+    print("✅ test_save_updates_transcript_on_existing_posts")
+
+
+def test_save_backfills_source_native_post_type_on_existing_posts():
+    """🐞 Same regression (run 57): an existing post_archive row carries OLD source_native
+    without `post_type` / `content_url` (those keys were added 2026-06-01). When the post
+    re-enters Top-N, the UPDATE should merge the new post-intrinsic keys into source_native
+    WITHOUT clobbering historical keys (config_fingerprint, link_flair_text, etc.).
+    """
+    res = _make_result()
+    target = res.top[0]["item"]
+    target.source_native = {
+        **(target.source_native or {}),
+        "post_type": "hosted:video",
+        "content_url": "https://v.redd.it/abc",
+    }
+    rows = runresult_to_rows(res)
+
+    fake = FakeClient()
+    target_pid = 7777
+    fake.existing_posts = [{"post_id": target_pid, "source": target.source,
+                            "source_native_id": target.source_native_id}]
+    # Mark every other top item as also-existing so the UPDATE branch is the one that fires
+    # for our target (otherwise it'd take the INSERT path and our patch wouldn't run).
+    for i, r in enumerate(res.top[1:], start=1):
+        fake.existing_posts.append({"post_id": 8000 + i, "source": r["item"].source,
+                                    "source_native_id": r["item"].source_native_id})
+
+    # Hand-craft what the existing source_native_native lookup returns for our target — that's
+    # the OLD schema row (no post_type / content_url) plus a historical key we must preserve.
+    old_source_native = {
+        "permalink": "/r/OpenAI/comments/abc/",
+        "subreddit": "OpenAI",
+        "fetch_mode": "old_html",
+        "config_fingerprint": "cfg_legacy",
+    }
+    # Monkey-patch the FakeClient to return this for the source_native SELECT.
+    orig_resolve = fake._resolve
+
+    def patched_resolve(q):
+        if q.table == "posts_archive" and q.op == "select" and q.filters.get("post_id") == target_pid:
+            return [{"source_native": old_source_native}]
+        return orig_resolve(q)
+    fake._resolve = patched_resolve
+
+    SupabaseStore(fake).save(res)
+
+    # Find the UPDATE for our target that carried source_native.
+    update_calls = [c for c in fake.calls
+                    if c[0] == "posts_archive" and c[1] == "update"
+                    and isinstance(c[2], dict) and "source_native" in c[2]]
+    assert update_calls, f"no UPDATE carried source_native; saw: {[c[2] for c in fake.calls if c[1]=='update']}"
+    merged = update_calls[0][2]["source_native"]
+    # New post-intrinsic keys present:
+    assert merged["post_type"] == "hosted:video"
+    assert merged["content_url"] == "https://v.redd.it/abc"
+    # Old keys preserved (this is the whole point of merge vs overwrite):
+    assert merged["config_fingerprint"] == "cfg_legacy"
+    assert merged["fetch_mode"] == "old_html"
+    assert merged["permalink"] == "/r/OpenAI/comments/abc/"
+    print("✅ test_save_backfills_source_native_post_type_on_existing_posts")
+
+
 def test_post_row_lifts_transcript_fields_when_present():
     """🐞 Regression (Anna 2026-06-01): runner._enrich_top_with_transcripts stashes
     transcript / transcript_lang / transcript_cost_usd on source_native for Top-N v.redd.it

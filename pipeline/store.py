@@ -198,34 +198,75 @@ class SupabaseStore:
                 for r in saved:
                     key_to_pid[(r["source"], r["source_native_id"])] = r["post_id"]
 
-            # Comments-summary refresh for existing rows (Anna 2026-05-31).
+            # Enrichment refresh for existing rows (Anna 2026-05-31 / 2026-06-01).
             # posts_archive is append-only for *content* (Rex 🔴1) — title/score/etc. snapshot at first
-            # insert. But comments_summary is an enrichment that comes in on each Top-N run for the post,
-            # and it strictly improves over time (more recent comments are more useful for System ② drafting).
-            # Updating just that single column on existing rows is consistent with Rex's invariant: we're
-            # not rewriting historical post content, just attaching the latest community thread.
+            # insert. But certain fields are *enrichments* that strictly improve over time when a post
+            # re-enters Top-N on a later run, and updating just those specific columns is consistent
+            # with Rex's invariant:
+            #   - `comments_summary`  : more recent community thread is more useful for System ② drafting
+            #   - `transcript` + lang + cost_usd : a video post that re-enters Top-N gets its Whisper
+            #     output written; before this loop, an existing video post would have transcript=NULL
+            #     forever because only the INSERT path carried the new columns.
+            #   - source_native's post-intrinsic keys (`post_type`, `content_url`) : these are facts
+            #     about the post itself, not run-snapshot signals. Backfill missing keys on old rows
+            #     without overwriting the rest of the JSON (preserves config_fingerprint etc.).
             for p in rows["posts"]:
                 key = (p["source"], p["source_native_id"])
-                new_comments = p.get("comments_summary")
-                if not new_comments:
-                    continue
                 pid = key_to_pid.get(key)
                 if pid is None:
                     continue
-                # If this row was just inserted, the insert already carried comments_summary — skip the
-                # redundant UPDATE.
+                # If this row was just inserted, the insert already carried these fields — skip.
                 if any((nr.get("source"), nr.get("source_native_id")) == key for nr in new_rows):
                     continue
-                # Failure mode: comments_summary is an enrichment, not core history. A Supabase blip /
-                # PostgREST 5xx on this UPDATE should not collapse the whole run into status=failed —
-                # align with _enrich_top_with_comments' "log and move on" policy in runner.py.
+
+                # Build a sparse patch: only include columns that have new content.
+                patch: dict = {}
+                new_comments = p.get("comments_summary")
+                if new_comments:
+                    patch["comments_summary"] = new_comments
+                new_transcript = p.get("transcript")
+                if new_transcript:
+                    patch["transcript"] = new_transcript
+                    if p.get("transcript_lang"):
+                        patch["transcript_lang"] = p["transcript_lang"]
+                    if p.get("transcript_cost_usd") is not None:
+                        patch["transcript_cost_usd"] = p["transcript_cost_usd"]
+                # Backfill `post_type` / `content_url` into existing source_native if absent.
+                # Only fire if the new HotItem actually has these (i.e. this run came from
+                # apify-listing harshmaur output, not an older fetch_mode that didn't capture them).
+                sn_new = p.get("source_native") or {}
+                backfillable = {k: sn_new[k] for k in ("post_type", "content_url")
+                                if sn_new.get(k)}
+                source_native_merged = None
+                if backfillable:
+                    # Read-modify-write keeps unrelated keys (config_fingerprint, link_flair_text,
+                    # historical permalink) intact while filling the new post-intrinsic ones.
+                    existing = self._exec(
+                        self.c.table("posts_archive")
+                        .select("source_native").eq("post_id", pid).limit(1))
+                    current_sn = (existing[0].get("source_native") if existing else None) or {}
+                    merged = dict(current_sn)
+                    for k, v in backfillable.items():
+                        if not merged.get(k):
+                            merged[k] = v
+                    if merged != current_sn:
+                        source_native_merged = merged
+                        patch["source_native"] = merged
+
+                if not patch:
+                    continue
+                # Failure mode policy aligned with _enrich_top_with_comments / _enrich_top_with_
+                # transcripts: enrichment updates are best-effort. A Supabase 5xx here should not
+                # collapse the whole run; log and continue.
                 try:
                     self._exec(
                         self.c.table("posts_archive")
-                        .update({"comments_summary": new_comments})
-                        .eq("post_id", pid))
+                        .update(patch).eq("post_id", pid))
                 except Exception as e:
-                    print(f"[store] comments_summary update failed for post_id={pid}: {e}")
+                    # Keep the key names in the log (not the values) so we can grep failure
+                    # patterns without leaking transcript content.
+                    print(f"[store] enrichment update failed for post_id={pid} "
+                          f"(keys={sorted(patch.keys())}): {e}")
 
         # report_top20: reference the real post_id (top posts must be in key_to_pid: either pre-existing or just inserted)
         rep_rows = []
