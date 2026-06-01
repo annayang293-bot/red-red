@@ -57,9 +57,20 @@ def _openai_prompt(items) -> str:
     # unanimous praise. Comments come from source_native["comments"] (set by runner.py's enrich step).
     lines = []
     for it in items:
-        snippet = (it.raw_snippet or it.title or "")[:280]
-        line = f"- id={it.id} | 标题={it.title!r} | 内容={snippet!r} | 来源={it.source}"
         sn = it.source_native or {}
+        # Transcript fallback (Anna 2026-06-01): Reddit video posts have empty body — the actual
+        # substance is in the audio. When the runner managed to transcribe via Whisper, the text
+        # is the better signal for "what is this post about" than the title alone.
+        transcript = (sn.get("transcript") or "").strip()
+        if transcript:
+            # Cap to 600 chars to keep the prompt bounded; Whisper text for typical Reddit clips
+            # is 200-500 words ≈ 800-1500 chars, more than the LLM needs to tier the post.
+            snippet = transcript[:600]
+            snippet_label = "视频转录"
+        else:
+            snippet = (it.raw_snippet or it.title or "")[:280]
+            snippet_label = "内容"
+        line = f"- id={it.id} | 标题={it.title!r} | {snippet_label}={snippet!r} | 来源={it.source}"
         comments = sn.get("comments") or []
         if comments:
             top3 = comments[:3]
@@ -68,7 +79,7 @@ def _openai_prompt(items) -> str:
             line += " | 热评=" + " ｜ ".join(comment_strs)
         lines.append(line)
     return (
-        "你在帮一个小红书博主筛选海外热点做选题。对每条内容(部分带 top 3 热评作为社区上下文):\n"
+        "你在帮一个小红书博主筛选海外热点做选题。对每条内容(部分带视频转录 / 部分带 top 3 热评作为社区上下文):\n"
         "1) 判断'迁移到小红书做选题'的潜力:强迁移=直接能做;中等迁移=要加工/看人设;弱迁移=开发圈内/暂不建议。\n"
         "   **有热评的可以参考社区反应** —— 比如标题平淡但评论很激烈 → 可能是好选题;标题响亮但评论唱反调 → 谨慎。\n"
         "2) 给一句中文点评(为什么适合/不适合做小红书选题,≤40字)。\n"

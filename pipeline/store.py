@@ -34,6 +34,13 @@ def _post_row(it, fp: str, ai: Optional[dict]) -> dict:
     # out into the canonical posts_archive.comments_summary JSONB column so System ② can read it
     # without re-parsing source_native.
     comments_summary = sn.get("comments") if sn.get("comments") else None
+    # Transcript enrichment (Anna 2026-06-01): runner._enrich_top_with_transcripts attaches the
+    # Whisper output to source_native for Top-N v.redd.it video posts. Lift the three fields onto
+    # the canonical posts_archive columns (added in 0008_posts_archive_transcript.sql) so System
+    # ② / future analytics can read transcripts without parsing source_native JSON.
+    transcript = sn.get("transcript") or None
+    transcript_lang = sn.get("transcript_lang") or None
+    transcript_cost_usd = sn.get("transcript_cost_usd")
     return {
         "source": it.source,
         "source_native_id": it.source_native_id,
@@ -46,6 +53,9 @@ def _post_row(it, fp: str, ai: Optional[dict]) -> dict:
         "tags_json": it.tags,
         "ai_review": ai,                       # {tier, comment} only present for items in top
         "comments_summary": comments_summary,  # [{score, author, body, is_op, replies}, ...] or None
+        "transcript": transcript,                       # Whisper text for v.redd.it videos; NULL otherwise
+        "transcript_lang": transcript_lang,             # Whisper-detected language, e.g. "english"
+        "transcript_cost_usd": transcript_cost_usd,     # Per-video Whisper cost (USD)
         "published_at": it.published_at,
         "fetched_at": it.captured_at,
         "config_fingerprint": sn.get("config_fingerprint", fp),

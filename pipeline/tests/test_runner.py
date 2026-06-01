@@ -213,6 +213,103 @@ def test_ai_meta_missing_flagged():
     print("✅ test_ai_meta_missing_flagged")
 
 
+def test_enrich_top_with_transcripts_attaches_text_to_video_posts():
+    """🐞 Regression (Anna 2026-06-01): for Top-N Reddit `hosted:video` posts, the runner
+    transcribes the audio via `pipeline.transcribe` and stashes text + language + cost on
+    `source_native`. Non-video posts are skipped. Failures don't crash — they bump the
+    failure counter returned by `_enrich_top_with_transcripts`, which then flows into
+    sanity_check's `video_transcribe_failed:N` anomaly.
+    """
+    from pipeline.runner import _enrich_top_with_transcripts
+    from unittest.mock import patch
+
+    def mk_item(nid, *, video, content_url=""):
+        return HotItem(
+            id=make_id("reddit", nid),
+            dedup_key=canonical_url(f"https://www.reddit.com/r/x/comments/{nid}/"),
+            title=f"Post {nid}",
+            source="reddit",
+            source_native_id=nid,
+            url=f"https://www.reddit.com/r/x/comments/{nid}/",
+            author="u", published_at=to_iso(NOW), captured_at=NOW.isoformat(),
+            lang="en", media_type="text",
+            raw_metrics={"likes": 1, "upvotes": 1, "comments": 0, "saves": 0},
+            source_native={
+                "subreddit": "x",
+                "post_type": "hosted:video" if video else "self",
+                "content_url": content_url,
+            },
+            tags=["x"], raw_snippet="",
+        )
+
+    video_ok = mk_item("v1", video=True, content_url="https://v.redd.it/abc")
+    video_fail = mk_item("v2", video=True, content_url="https://v.redd.it/def")
+    plain_text = mk_item("t1", video=False)
+
+    call_log: list[str] = []
+
+    def fake_transcribe_reddit_video(source_native):
+        cu = source_native.get("content_url", "")
+        call_log.append(cu)
+        if "abc" in cu:
+            return {"text": "OK transcript", "language": "english",
+                    "duration_seconds": 60.0, "cost_usd": 0.006}
+        return None   # simulate audio fetch or Whisper failure for the second video
+
+    with patch("pipeline.transcribe.transcribe_reddit_video", side_effect=fake_transcribe_reddit_video):
+        failed = _enrich_top_with_transcripts([video_ok, video_fail, plain_text], {})
+
+    assert failed == 1, failed
+    # Non-video item never invoked the transcriber.
+    assert call_log == ["https://v.redd.it/abc", "https://v.redd.it/def"], call_log
+    # OK video got transcript + language + cost on source_native.
+    assert video_ok.source_native["transcript"] == "OK transcript"
+    assert video_ok.source_native["transcript_lang"] == "english"
+    assert video_ok.source_native["transcript_cost_usd"] == 0.006
+    # Failed video: source_native unchanged (no transcript key written).
+    assert "transcript" not in (video_fail.source_native or {})
+    # Plain text: source_native unchanged (no transcript key written).
+    assert "transcript" not in (plain_text.source_native or {})
+    print("✅ test_enrich_top_with_transcripts_attaches_text_to_video_posts")
+
+
+def test_sanity_check_surfaces_video_transcribe_failed():
+    from pipeline.runner import sanity_check
+    items = _reddit_items()[:5]
+    s = sanity_check(items, ai_mode="ai", failed_sources=[],
+                     ai_meta_missing=0, video_transcribe_failed=2)
+    assert any("video_transcribe_failed:2" in a for a in s["anomalies"]), s["anomalies"]
+    assert s["status"] == "OK_WITH_ANOMALY"
+    # 0 failures → no anomaly added on that axis
+    s2 = sanity_check(items, ai_mode="ai", failed_sources=[],
+                      ai_meta_missing=0, video_transcribe_failed=0)
+    assert not any("video_transcribe_failed" in a for a in s2["anomalies"]), s2["anomalies"]
+    print("✅ test_sanity_check_surfaces_video_transcribe_failed")
+
+
+def test_enrich_top_with_transcripts_can_be_disabled_via_cfg():
+    """`cfg.transcribe.enabled = False` short-circuits the loop without calling the module —
+    useful for prod kill-switching if Whisper rates spike."""
+    from pipeline.runner import _enrich_top_with_transcripts
+    from unittest.mock import patch
+    item = HotItem(
+        id=make_id("reddit", "v1"),
+        dedup_key=canonical_url("https://www.reddit.com/r/x/comments/v1/"),
+        title="t", source="reddit", source_native_id="v1",
+        url="https://www.reddit.com/r/x/comments/v1/",
+        author="u", published_at=to_iso(NOW), captured_at=NOW.isoformat(),
+        lang="en", media_type="text",
+        raw_metrics={"likes": 1, "upvotes": 1, "comments": 0, "saves": 0},
+        source_native={"post_type": "hosted:video", "content_url": "https://v.redd.it/abc"},
+        tags=[], raw_snippet="",
+    )
+    with patch("pipeline.transcribe.transcribe_reddit_video",
+               side_effect=AssertionError("should not be called when disabled")):
+        failed = _enrich_top_with_transcripts([item], {"transcribe": {"enabled": False}})
+    assert failed == 0
+    print("✅ test_enrich_top_with_transcripts_can_be_disabled_via_cfg")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

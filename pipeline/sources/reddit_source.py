@@ -449,13 +449,24 @@ class RedditSource(Source):
         sub_name = it.get("communityName") or it.get("parsedCommunityName") or sub_fallback or ""
         if sub_name.startswith("r/"):
             sub_name = sub_name[2:]
+        # Capture video-source metadata so the post-Top-N transcribe step (runner._enrich_top_
+        # with_transcripts) can find v.redd.it videos. harshmaur emits `postType: "hosted:video"`
+        # for Reddit-native video and `contentUrl: https://v.redd.it/<id>` for the CDN base.
+        # Cross-posted YouTube embeds use `postType: "rich:video"` and are NOT in scope yet (see
+        # transcribe.is_reddit_video_post).
+        content_url = it.get("contentUrl") or ""
+        post_type = (it.get("postType") or "").lower()
         source_native = {
             "subreddit": sub_name,
             "permalink": permalink,
             "fetch_mode": "apify",
             "link_flair_text": it.get("flair"),
+            "post_type": post_type,
+            "content_url": content_url,
             # `comments` is populated later by fetch_comments_for_urls; leave key absent now so the
             # `_enrich_top_with_comments` "if comments: write" check fires on the second pass.
+            # `transcript` / `transcript_lang` / `transcript_cost_usd` are populated later by
+            # `_enrich_top_with_transcripts` (only for hosted:video posts in Top-N).
         }
         return HotItem(
             id=make_id(self.name, native_id),

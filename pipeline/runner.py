@@ -21,6 +21,7 @@ from .config import DEFAULT_CONFIG
 from .scoring import score_items, filter_hot
 from .merge import dedup_items, enrich_tags, select_ranked
 from .ai_review import heuristic_review
+from . import transcribe
 
 
 def config_fingerprint(cfg: dict, keywords: list) -> str:
@@ -124,8 +125,57 @@ def _enrich_top_with_comments(sources, report_items, cfg):
                 it.source_native["comments"] = comments
 
 
-def sanity_check(report_items, ai_mode, failed_sources, ai_meta_missing=0):
-    """Post-run content sanity scan (Anna locked 5 lightweight checks, hardening #4)."""
+def _enrich_top_with_transcripts(report_items, cfg) -> int:
+    """Transcribe Top-N Reddit `hosted:video` posts via the `pipeline.transcribe` module.
+
+    Iterates Top-N, picks out posts whose source_native carries a v.redd.it video, calls
+    `transcribe.transcribe_reddit_video`, and on success stashes the transcript fields onto
+    `source_native` so `pipeline/store.py::_post_row` writes them to
+    posts_archive.{transcript, transcript_lang, transcript_cost_usd}.
+
+    Returns the count of posts we expected to transcribe but couldn't (audio fetch failed,
+    Whisper rate-limited, OPENAI_API_KEY missing, etc.) — `runner.sanity_check` adds a
+    `video_transcribe_failed:N` anomaly so an operator can spot a systemic failure pattern.
+    Individual failures do NOT bubble to `failed_sources` (per A' design 2026-06-01); the
+    post still ships with transcript NULL.
+    """
+    transcribe_cfg = (cfg or {}).get("transcribe") or {}
+    if transcribe_cfg.get("enabled") is False:
+        return 0
+    failed = 0
+    for it in report_items:
+        sn = it.source_native or {}
+        if not transcribe.is_reddit_video_post(sn):
+            continue
+        try:
+            result = transcribe.transcribe_reddit_video(sn)
+        except Exception as e:  # noqa: BLE001 — transcribe is best-effort, never raise upstream
+            print(f"[runner] unexpected transcribe error for {(sn.get('permalink') or it.url)!r}: {e}")
+            result = None
+        if not result or not result.get("text"):
+            failed += 1
+            continue
+        # Stash on source_native so the post writes through store._post_row + so AI review can
+        # use the text as body-equivalent input (videos typically have empty post body).
+        it.source_native = {
+            **sn,
+            "transcript": result["text"],
+            "transcript_lang": result.get("language") or None,
+            "transcript_cost_usd": result.get("cost_usd"),
+        }
+    return failed
+
+
+def sanity_check(report_items, ai_mode, failed_sources, ai_meta_missing=0,
+                 video_transcribe_failed=0):
+    """Post-run content sanity scan (Anna locked 5 lightweight checks, hardening #4).
+
+    `video_transcribe_failed` (Anna 2026-06-01, A' design): number of Top-N Reddit
+    `hosted:video` posts whose audio fetch or Whisper transcription returned None. Surfacing
+    this as an anomaly lets us notice a widespread direct-fetch failure pattern (e.g. v.redd.it
+    starts blocking the GH-Actions IP class) without bubbling individual post failures into
+    `failed_sources` (which would degrade the whole run).
+    """
     n = len(report_items)
     anomalies = []
     if n == 0:
@@ -146,6 +196,8 @@ def sanity_check(report_items, ai_mode, failed_sources, ai_meta_missing=0):
         anomalies.append(f"source_skew({top_src}={top_n}/{n}>75%)")
     if failed_sources:
         anomalies.append(f"source_fetch_failed({','.join(failed_sources)})")
+    if video_transcribe_failed:
+        anomalies.append(f"video_transcribe_failed:{video_transcribe_failed}")
     status = "OK_WITH_ANOMALY" if anomalies else "OK"
     return {"status": status, "anomalies": anomalies, "n": n, "ai_mode": ai_mode,
             "source_dist": dict(src_counts), "failed_sources": failed_sources}
@@ -199,6 +251,13 @@ def run_pipeline(topic, sources, *, cfg=None, keywords=None,
     # responses. Optional / fail-safe — comment fetch errors don't tank the pipeline.
     _enrich_top_with_comments(sources, report_items, cfg)
 
+    # ④.6 Transcript enrichment (Anna 2026-06-01): for each Top-N Reddit `hosted:video` post,
+    # fetch the v.redd.it audio MP4 directly + transcribe via OpenAI Whisper. Result lands on
+    # source_native["transcript"] + persists to posts_archive.transcript (et al). Like the
+    # comments enrichment above, optional / fail-soft — a failed transcription leaves the post
+    # in the report with transcript=NULL; the count of failures is reported via the sanity check.
+    video_transcribe_failed = _enrich_top_with_transcripts(report_items, cfg)
+
     # ⑤ AI review (strong/medium/weak)
     meta, ai_mode = review_fn(report_items, cfg)
     top = [{"rank": i + 1, "item": it,
@@ -209,7 +268,8 @@ def run_pipeline(topic, sources, *, cfg=None, keywords=None,
 
     # ⑥ Sanity
     ai_meta_missing = sum(1 for r in top if not r["tier"])
-    sanity = sanity_check(report_items, ai_mode, failed, ai_meta_missing=ai_meta_missing)
+    sanity = sanity_check(report_items, ai_mode, failed, ai_meta_missing=ai_meta_missing,
+                          video_transcribe_failed=video_transcribe_failed)
 
     # Run state: with sources, if every fetch failed and there are zero candidates = upstream is fully down (failed);
     # otherwise completed (incl. "ran successfully but produced nothing").

@@ -323,6 +323,49 @@ def test_ensure_topic_other_active_fails_loud():
     print("✅ test_ensure_topic_other_active_fails_loud")
 
 
+def test_post_row_lifts_transcript_fields_when_present():
+    """🐞 Regression (Anna 2026-06-01): runner._enrich_top_with_transcripts stashes
+    transcript / transcript_lang / transcript_cost_usd on source_native for Top-N v.redd.it
+    video posts. store._post_row must lift those into top-level columns (matching the schema
+    in 0008_posts_archive_transcript.sql); leave NULL when absent.
+    """
+    from pipeline.store import _post_row
+
+    class _FakeItem:
+        def __init__(self, sn):
+            self.source = "reddit"
+            self.source_native_id = "abc"
+            self.title = "t"
+            self.url = "https://www.reddit.com/r/x/comments/abc/"
+            self.raw_snippet = ""
+            self.raw_metrics = {}
+            self.hot_score = 1.0
+            self.relevance_score = 0.5
+            self.tags = []
+            self.published_at = "2026-06-01T00:00:00+00:00"
+            self.captured_at = "2026-06-01T00:01:00+00:00"
+            self.source_native = sn
+
+    # With transcript: three columns are filled.
+    with_t = _FakeItem({
+        "transcript": "Hello there.",
+        "transcript_lang": "english",
+        "transcript_cost_usd": 0.0076,
+    })
+    row = _post_row(with_t, fp="cfg_x", ai=None)
+    assert row["transcript"] == "Hello there."
+    assert row["transcript_lang"] == "english"
+    assert row["transcript_cost_usd"] == 0.0076
+
+    # Without transcript: three columns are None (so PG stores NULL).
+    without_t = _FakeItem({"subreddit": "x"})
+    row2 = _post_row(without_t, fp="cfg_x", ai=None)
+    assert row2["transcript"] is None
+    assert row2["transcript_lang"] is None
+    assert row2["transcript_cost_usd"] is None
+    print("✅ test_post_row_lifts_transcript_fields_when_present")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
