@@ -32,6 +32,11 @@ on:
         required: true
       REDDIT_USER_AGENT:
         required: true
+      APIFY_TOKEN:
+        # required since 2026-05-31 — RedditSource defaults to auth_mode: apify, which calls
+        # the harshmaur/reddit-scraper actor over the Apify REST API. Missing token surfaces
+        # downstream as a Python RuntimeError → `failed_sources` → run_once exits 1.
+        required: true
 
 # Defense-in-depth lockdowns (Rex Phase 1, 2026-05-31):
 #  - permissions: lock GITHUB_TOKEN to read-only (we only checkout; no push / no PR / no release).
@@ -55,6 +60,7 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
