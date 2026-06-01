@@ -52,10 +52,12 @@ def build_sources(cfg: dict, subreddits: list[str]) -> list:
     """Build real data sources (Reddit + PH). subreddits is supplied by resolve_topic (LLM recommends per topic;
     falls back to defaults on failure)."""
     reddit_cfg = dict(cfg.get("reddit") or {})
-    # Default to old_html since Reddit's 2025-11 anti-bot policy 403s the JSON API for our IP class
-    # (Anna 2026-05-31). The "public" / "oauth" JSON path is kept in RedditSource for if-and-when
-    # JSON access comes back or OAuth is wired in.
-    reddit_cfg.setdefault("auth_mode", "old_html")
+    # Default to apify since 2026-05-31 (Anna): GitHub-hosted runners + Vercel are both
+    # datacenter IP class, which Reddit 403s. Apify uses residential proxies and is the only
+    # path we've verified works end-to-end. Cost analysis in docs/APIFY_RESEARCH.md.
+    # "old_html" / "public" / "oauth" remain in RedditSource as deprecated-but-functional
+    # fallbacks; pass reddit.auth_mode in cfg to force.
+    reddit_cfg.setdefault("auth_mode", "apify")
     reddit_cfg["subreddits"] = subreddits
     return [
         RedditSource({"reddit": reddit_cfg}),

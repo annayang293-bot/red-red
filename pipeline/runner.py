@@ -55,49 +55,73 @@ class RunResult:
 
 
 def _enrich_top_with_comments(sources, report_items, cfg):
-    """Attach top-N comments to each Top-N item whose source supports `fetch_post_comments`.
+    """Attach top-N comments to each Top-N item whose source supports the comments interface.
 
-    Currently only RedditSource (old_html mode) — other adapters return empty / silently skip.
-    Comments are stored on `item.source_native["comments"]` (list of dicts), which then flows
-    through to `posts_archive.comments_summary` and the frontend ReportItem.
+    Two interfaces supported, in priority order:
+    - `src.fetch_comments_for_urls(urls)` — batch (one network round-trip for the whole Top-N
+      slice of that source). Used by the Apify-backed RedditSource where each per-post call has
+      a non-trivial start latency, so 20 sequential calls would dominate wall-clock.
+    - `src.fetch_post_comments(permalink, op_author, max_comments)` — per-post (one round-trip
+      per item). Old-html RedditSource and any future source default to this; rate-limit pacing
+      (`comments.rate_limit_sleep`, default 1.5s) prevents 429s when iterating quickly.
 
-    Rate-limiting (Anna 2026-05-31): Reddit returns HTTP 429 when comment-page URLs are hit
-    in rapid succession (live runs 47-48 confirmed only the first 3-5 items got through before
-    being throttled). We pace requests with a sleep between successful fetches — default 1.5s
-    keeps us under ~30 req/min (anonymous Reddit's documented limit is 60/min; we leave half
-    the budget for the listing fetches that already happened earlier in the run).
+    Comments are stored on `item.source_native["comments"]` (list of dicts), which flows through
+    to `posts_archive.comments_summary` and the frontend ReportItem.
 
-    Adds ~20 HTTP calls × ~1.5s pacing → ~30s per run. Each fetch failure is logged and skipped;
-    comments are optional enrichment, never a blocker on the run.
+    Each fetch failure is logged and skipped; comments are optional enrichment, never a blocker.
     """
     comments_cfg = cfg.get("comments") or {}
     max_comments = int(comments_cfg.get("max_per_post", 10))
     rate_limit_sleep = float(comments_cfg.get("rate_limit_sleep", 1.5))
-    # Build a quick lookup so we don't scan the sources list 20 times.
     by_source = {getattr(s, "name", None): s for s in sources}
-    pending: list[tuple] = []  # list of (item, src, permalink) to fetch with pacing
+    # Group pending Top-N items by their source so a batch-capable source can fetch in one call.
+    pending_by_src: dict[str, list[tuple]] = {}
     for it in report_items:
         src = by_source.get(it.source)
-        if src is None or not hasattr(src, "fetch_post_comments"):
+        if src is None:
+            continue
+        if not (hasattr(src, "fetch_post_comments") or hasattr(src, "fetch_comments_for_urls")):
             continue
         permalink = (it.source_native or {}).get("permalink")
         if not permalink:
             continue
-        pending.append((it, src, permalink))
-    for idx, (it, src, permalink) in enumerate(pending):
-        if idx > 0 and rate_limit_sleep > 0:
-            time.sleep(rate_limit_sleep)
-        try:
-            comments = src.fetch_post_comments(
-                permalink, op_author=it.author, max_comments=max_comments,
-            )
-        except Exception as e:  # noqa: BLE001 — comment fetch is best-effort
-            print(f"[runner] comments fetch failed for {permalink}: {e}")
+        pending_by_src.setdefault(it.source, []).append((it, src, permalink))
+
+    for src_name, pending in pending_by_src.items():
+        src = pending[0][1]
+        # Batch path: one network call for the whole Top-N slice of this source. Each item's
+        # canonical URL (HotItem.url) is the reddit.com permalink — pass that, not the path-only
+        # permalink form, because Apify needs absolute URLs.
+        if hasattr(src, "fetch_comments_for_urls"):
+            urls = [it.url for it, _, _ in pending if it.url]
+            try:
+                by_path = src.fetch_comments_for_urls(urls, max_comments=max_comments)
+            except Exception as e:  # noqa: BLE001
+                print(f"[runner] batch comments fetch failed for {src_name}: {e}")
+                by_path = {}
+            for it, _, permalink in pending:
+                comments = by_path.get(permalink) or []
+                if not comments:
+                    continue
+                if it.source_native is None:
+                    it.source_native = {}
+                it.source_native["comments"] = comments
             continue
-        if comments:
-            if it.source_native is None:
-                it.source_native = {}
-            it.source_native["comments"] = comments
+        # Per-post fallback (old-html etc.): sequential with rate-limit pacing.
+        for idx, (it, _, permalink) in enumerate(pending):
+            if idx > 0 and rate_limit_sleep > 0:
+                time.sleep(rate_limit_sleep)
+            try:
+                comments = src.fetch_post_comments(
+                    permalink, op_author=it.author, max_comments=max_comments,
+                )
+            except Exception as e:  # noqa: BLE001 — comment fetch is best-effort
+                print(f"[runner] comments fetch failed for {permalink}: {e}")
+                continue
+            if comments:
+                if it.source_native is None:
+                    it.source_native = {}
+                it.source_native["comments"] = comments
 
 
 def sanity_check(report_items, ai_mode, failed_sources, ai_meta_missing=0):

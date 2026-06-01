@@ -1,25 +1,34 @@
-"""Reddit source — three fetch modes (config.reddit.auth_mode):
+"""Reddit source — four fetch modes (config.reddit.auth_mode):
 
-- "old_html" (default since 2026-05-31, Anna 2026-05-31): scrapes https://old.reddit.com/r/<sub>/hot/
-  HTML pages. Reddit's 2025-11 Responsible Builder Policy aggressively 403s the JSON API for
-  non-residential IPs (datacenter / Tor / public proxies), but **HTML pages still return 200 with
-  vote data embedded as `data-*` attributes**. This bypass requires no OAuth, no paid proxy, no
-  third-party service. Parsed via stdlib regex on `data-fullname` / `data-score` /
-  `data-comments-count` / `data-author` / `data-permalink` / `data-timestamp`.
-- "public" (legacy): hits https://www.reddit.com/r/<sub>/<listing>.json. Read-only public JSON, no
-  app needed. Currently broken under Reddit's anti-bot — keep as a fallback for when it comes back.
-- "oauth" (more robust): application-only OAuth (client_credentials), needs REDDIT_CLIENT_ID /
-  REDDIT_CLIENT_SECRET in .env. Untested under current policy; reserved for Junxi's app approval.
+- "apify" (default since 2026-05-31, Anna): uses the Apify-hosted `harshmaur/reddit-scraper`
+  actor. Apify's residential proxy pool sidesteps Reddit's 2025-11 IP-class block. Split
+  architecture (Anna 2026-05-31): one Apify run for the listing call (`startUrls = [N sub URLs]`,
+  `crawlCommentsPerPost: false`) returns ~30 posts per sub with no comments attached; later, after
+  the pipeline picks Top-N, a second Apify run fetches threaded comments for just those
+  permalinks (`startUrls = [Top-N URLs]`, `crawlCommentsPerPost: true`). `fetch_comments_for_urls`
+  exposes the batch interface; `runner._enrich_top_with_comments` detects and routes through it
+  instead of the per-post loop. Requires `APIFY_TOKEN` in env (`.env` locally, Vercel/GH secrets
+  in CI). See `docs/APIFY_RESEARCH.md` for actor choice + cost analysis.
+- "old_html": scrapes https://old.reddit.com/r/<sub>/hot/ HTML pages. Was the default
+  2026-05-25 → 2026-05-31 after Reddit JSON started 403'ing datacenter IPs; now demoted to
+  fallback because GitHub-hosted runners get the same 403 (verified run 52, 2026-05-31).
+- "public" (legacy): hits https://www.reddit.com/r/<sub>/<listing>.json. Read-only public JSON.
+- "oauth" (legacy): application-only OAuth (client_credentials). Reserved if Reddit ever brings
+  back IP-class-agnostic read-only access via OAuth.
 
-Robustness across all modes: UA validation; exponential backoff on rate-limit / transient errors +
-honor Retry-After; failed subs go into failed_subs rather than being swallowed silently.
+Robustness across all modes: failed subs go into `failed_subs` rather than being swallowed
+silently. The Apify path batches all subs into a single Apify run (`startUrls = [N URLs]`); if
+that whole run fails, every requested sub lands in `failed_subs`. Subs that the run silently
+omits (private / banned / typo) also get marked failed by post-processing.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import requests
 
@@ -30,9 +39,13 @@ TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 OAUTH_BASE = "https://oauth.reddit.com"
 PUBLIC_BASE = "https://www.reddit.com"
 OLD_HTML_BASE = "https://old.reddit.com"
+APIFY_BASE = "https://api.apify.com"
+APIFY_ACTOR = "harshmaur~reddit-scraper"   # see docs/APIFY_RESEARCH.md for the pivot from fatihtahta
 DEFAULT_UA = "python:system1-app:v0.1 (by /u/CHANGE_ME)"
 _BAD_UA_TOKENS = ("CHANGE_ME", "yourname", "<realuser>", "<user>")
 _MAX_RETRIES = 3
+_APIFY_RUN_TIMEOUT_S = 180         # Per-sub timeout. Probed runs took 40-90s; 3x headroom.
+_APIFY_POLL_INTERVAL_S = 5
 
 # ---- old.reddit.com HTML parsing helpers (Anna 2026-05-31) ----
 #
@@ -223,10 +236,15 @@ class RedditSource(Source):
     def __init__(self, cfg: dict):
         super().__init__(cfg)
         self.rc = cfg["reddit"]
-        self.mode = (self.rc.get("auth_mode") or "old_html").lower()
+        self.mode = (self.rc.get("auth_mode") or "apify").lower()
         self._token = None
         self._token_exp = 0.0
         self.failed_subs: list[str] = []
+        # Apify path: comments are fetched inline alongside the listing. _enrich_top_with_comments
+        # in runner.py later calls fetch_post_comments(permalink) per Top-N item — we serve those
+        # calls from this cache instead of going back over the network. Keyed by canonical
+        # permalink (e.g. "/r/OpenAI/comments/abc/slug/"). Repopulated on every fetch().
+        self._apify_comments_by_permalink: dict[str, list[dict]] = {}
 
     # ---- UA / auth ----
     def _ua(self) -> str:
@@ -282,13 +300,360 @@ class RedditSource(Source):
 
     # ---- fetch dispatch ----
     def fetch(self):
-        self._validate_ua()
         self.failed_subs = []
+        if self.mode == "apify":
+            # Apify is hosted; it owns the UA / proxy / rate-limit story. We don't validate the
+            # local REDDIT_USER_AGENT (irrelevant — Apify uses its own) and we don't retry
+            # individual HTTP calls (the actor's runtime already does that internally).
+            return self._fetch_apify()
+        # Legacy paths still need a compliant local UA.
+        self._validate_ua()
         if self.mode == "old_html":
             return self._fetch_old_html()
         return self._fetch_json()
 
-    # ---- mode: old_html (default since 2026-05-31, Reddit JSON API blocked) ----
+    # ---- mode: apify (default since 2026-05-31, Anna; see docs/APIFY_RESEARCH.md) ----
+    def _apify_token(self) -> str:
+        tok = os.environ.get("APIFY_TOKEN")
+        if not tok:
+            raise RuntimeError(
+                "APIFY_TOKEN missing. Set it in .env locally and in Vercel + GitHub Actions "
+                "secrets for prod. If you actually want the deprecated old.reddit fallback for "
+                "a one-off run, pass reddit.auth_mode: old_html in cfg."
+            )
+        return tok
+
+    def _apify_request(self, method: str, path: str, *, body=None, token: str | None = None):
+        """Thin wrapper. We do NOT retry on Apify 429 / 5xx — Apify hosts the actor and runs its own
+        rate-limit / retry internally. Adding our own sleep on top would double-bill and confuse
+        the failure log. We only handle network-level connection errors with a single retry."""
+        url = f"{APIFY_BASE}{path}"
+        headers = {"Authorization": f"Bearer {token or self._apify_token()}"}
+        kwargs = {"timeout": 60, "headers": headers}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            kwargs["data"] = json.dumps(body).encode("utf-8")
+        try:
+            resp = requests.request(method, url, **kwargs)
+        except requests.RequestException:
+            # One retry for transient connection errors only — Apify itself is a stable service.
+            time.sleep(1.0)
+            resp = requests.request(method, url, **kwargs)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _apify_run(self, label: str, input_payload: dict, *, token: str) -> dict | None:
+        """Generic actor-run helper: POST /runs → poll → GET /datasets/<id>/items.
+
+        Returns {run_id, items, usage_usd} on SUCCEEDED, or None on any failure (the caller logs
+        the label so we can tell which call site failed).
+        """
+        try:
+            start = self._apify_request(
+                "POST", f"/v2/acts/{quote(APIFY_ACTOR, safe='~')}/runs",
+                body=input_payload, token=token,
+            )
+        except requests.HTTPError as e:
+            sc = getattr(e.response, "status_code", "?")
+            body = ""
+            try:
+                body = (e.response.text or "")[:300]
+            except Exception:
+                pass
+            print(f"[reddit:apify] {label} start failed: HTTP {sc} {body}")
+            return None
+        run_id = start.get("data", {}).get("id")
+        if not run_id:
+            print(f"[reddit:apify] {label} start returned no run_id: {start}")
+            return None
+        deadline = time.time() + _APIFY_RUN_TIMEOUT_S
+        final = None
+        while time.time() < deadline:
+            try:
+                resp = self._apify_request(
+                    "GET", f"/v2/acts/{quote(APIFY_ACTOR, safe='~')}/runs/{run_id}",
+                    token=token,
+                )
+            except requests.HTTPError as e:
+                print(f"[reddit:apify] {label} poll failed: {e}")
+                time.sleep(_APIFY_POLL_INTERVAL_S)
+                continue
+            state = resp.get("data", {}).get("status")
+            if state in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
+                final = resp["data"]
+                break
+            time.sleep(_APIFY_POLL_INTERVAL_S)
+        else:
+            print(f"[reddit:apify] {label} polling timed out after {_APIFY_RUN_TIMEOUT_S}s (run_id={run_id})")
+            return None
+        if final.get("status") != "SUCCEEDED":
+            print(f"[reddit:apify] {label} actor finished with state={final.get('status')} "
+                  f"(run_id={run_id}, usage=${final.get('usageTotalUsd')})")
+            return None
+        try:
+            items = self._apify_request(
+                "GET", f"/v2/datasets/{final['defaultDatasetId']}/items",
+                token=token,
+            )
+        except requests.HTTPError as e:
+            print(f"[reddit:apify] {label} dataset fetch failed: {e}")
+            return None
+        return {"run_id": run_id, "items": items, "usage_usd": final.get("usageTotalUsd")}
+
+    def _apify_post_to_hot_item(self, it: dict, excluded_flairs: list[str], sub_fallback: str | None) -> HotItem | None:
+        """Map one harshmaur post object → HotItem. Returns None for posts we want to filter
+        (stickied / flair-blacklisted / missing id+url).
+        """
+        if it.get("stickied") or it.get("pinned"):
+            return None
+        flair = (it.get("flair") or "").lower()
+        if flair and any(bad in flair for bad in excluded_flairs):
+            return None
+        native_id = it.get("parsedId") or it.get("id") or ""
+        # harshmaur strips the "t3_" prefix into parsedId; plain `id` may be either form.
+        if native_id.startswith("t3_"):
+            native_id = native_id[3:]
+        if not native_id:
+            print(f"[reddit:apify] skipping post missing id: {(it.get('title') or '')[:50]!r}")
+            return None
+        # `postUrl` is the canonical reddit.com permalink; `url` is the outbound link target for
+        # link posts (image / article / video) — we want postUrl for the report card. Permalink
+        # is the path-only form harshmaur doesn't supply directly, so derive it from postUrl.
+        link = it.get("postUrl") or it.get("url") or ""
+        if not link:
+            print(f"[reddit:apify] skipping post missing url: {(it.get('title') or '')[:50]!r}")
+            return None
+        # Derive Reddit path-only permalink (matches the shape parse_old_reddit_html emitted):
+        # https://www.reddit.com/r/<sub>/comments/<id>/<slug>/  →  /r/<sub>/comments/<id>/<slug>/
+        permalink = ""
+        if "reddit.com" in link:
+            idx = link.find("/r/")
+            if idx != -1:
+                permalink = link[idx:]
+        pub_iso = it.get("createdAt") or ""
+        try:
+            pub = datetime.fromisoformat(pub_iso.replace("Z", "+00:00")) if pub_iso else None
+        except ValueError:
+            pub = None
+        score = int(it.get("upVotes") or 0)
+        num_comments = int(it.get("commentsCount") or 0)
+        # harshmaur exposes `postType` (image / video / link / self / gallery); coarse map.
+        ptype = (it.get("postType") or "").lower()
+        if ptype == "video":
+            media_type = "video"
+        elif ptype in ("image", "gallery"):
+            media_type = "image"
+        else:
+            media_type = "text"
+        author = it.get("authorName") or None
+        sub_name = it.get("communityName") or it.get("parsedCommunityName") or sub_fallback or ""
+        if sub_name.startswith("r/"):
+            sub_name = sub_name[2:]
+        source_native = {
+            "subreddit": sub_name,
+            "permalink": permalink,
+            "fetch_mode": "apify",
+            "link_flair_text": it.get("flair"),
+            # `comments` is populated later by fetch_comments_for_urls; leave key absent now so the
+            # `_enrich_top_with_comments` "if comments: write" check fires on the second pass.
+        }
+        return HotItem(
+            id=make_id(self.name, native_id),
+            dedup_key=canonical_url(link),
+            title=it.get("title") or "",
+            source=self.name,
+            source_native_id=native_id,
+            url=link,
+            author=author,
+            published_at=to_iso(pub),
+            captured_at=now_iso(),
+            lang="en",
+            media_type=media_type,
+            raw_metrics={
+                "likes": score,
+                "upvotes": score,
+                "comments": num_comments,
+                "saves": 0,
+            },
+            source_native=source_native,
+            tags=[t for t in [sub_name, it.get("flair")] if t],
+            raw_snippet=clip_snippet(it.get("body") or ""),
+        )
+
+    def _fetch_apify(self) -> list[HotItem]:
+        """Listing-only fetch: one Apify run with all subreddit URLs, no comments.
+
+        Why split listing from comments (Anna 2026-05-31): comments are only meaningful for the
+        top-20 items the report ends up showing — fetching them for every candidate (~180 posts)
+        would 3x the per-run cost without surfacing them anywhere. The Top-N comment fetch is
+        done later by `fetch_comments_for_urls`, called from runner._enrich_top_with_comments.
+
+        Whole-call failure (Apify down, token revoked, etc.) → all subs land in failed_subs.
+        Per-sub failures within a successful run get logged but don't block the rest.
+        """
+        token = self._apify_token()
+        subs = self.rc.get("subreddits") or []
+        if not subs:
+            return []
+        listing = self.rc.get("listing", "hot")
+        max_posts = int(self.rc.get("fetch_limit_per_sub", 60))
+        excluded_flairs = [f.lower() for f in self.rc.get("excluded_flairs", [])]
+
+        # harshmaur's startUrls accepts a list of subreddit *listing* URLs (e.g. /r/X/hot/).
+        # `searchSort` honors the sort segment in those URLs; we still pass it explicitly because
+        # harshmaur respects the field when present.
+        start_urls = [{"url": f"https://www.reddit.com/r/{s}/{listing}/"} for s in subs]
+        payload = {
+            "startUrls": start_urls,
+            "searchPosts": False,
+            "searchComments": False,
+            "searchCommunities": False,
+            "searchUsers": False,
+            "includeNSFW": False,
+            "fastMode": True,
+            "crawlCommentsPerPost": False,
+            "maxPostsCount": max_posts,
+            "maxCommentsPerPost": 0,
+            "maxCommentsCount": 0,
+            "maxCommunitiesCount": 0,
+            "searchSort": listing.capitalize(),
+            "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
+        }
+        result = self._apify_run("listing", payload, token=token)
+        if result is None:
+            # Whole listing call failed — every sub counts as failed.
+            self.failed_subs.extend(subs)
+            return []
+        items = result["items"]
+        print(f"[reddit:apify] listing ok: {len(items)} items "
+              f"(run_id={result['run_id']}, usage=${result['usage_usd']})")
+        out: list[HotItem] = []
+        seen_subs: set[str] = set()
+        for raw in items:
+            if (raw.get("dataType") or "") != "post":
+                continue
+            hot = self._apify_post_to_hot_item(raw, excluded_flairs, sub_fallback=None)
+            if hot is None:
+                continue
+            sub = (hot.source_native or {}).get("subreddit") or ""
+            if sub:
+                seen_subs.add(sub.lower())
+            out.append(hot)
+        # Any requested sub that didn't show up at all → failed_subs (private / banned /
+        # spelt wrong / harshmaur skipped it).
+        for s in subs:
+            if s.lower() not in seen_subs:
+                self.failed_subs.append(s)
+        return out
+
+    # ---- Top-N comment enrichment (Apify path) ----
+    def fetch_comments_for_urls(self, post_urls: list[str], max_comments: int = 10) -> dict[str, list[dict]]:
+        """Batch fetch top-N comments for an arbitrary set of post URLs in a single Apify run.
+
+        Returns a dict keyed by the path-only Reddit permalink (`/r/<sub>/comments/<id>/<slug>/`) →
+        list of canonical comment dicts (same shape parse_old_reddit_comments returns). Posts whose
+        comments couldn't be fetched simply don't show up in the dict — caller treats absence as
+        "no comments." The map is also stashed into `self._apify_comments_by_permalink` so a later
+        per-permalink `fetch_post_comments` call serves from memory.
+        """
+        if not post_urls or max_comments <= 0:
+            return {}
+        token = self._apify_token()
+        payload = {
+            "startUrls": [{"url": u} for u in post_urls],
+            "searchPosts": False,
+            "searchComments": False,
+            "searchCommunities": False,
+            "searchUsers": False,
+            "includeNSFW": False,
+            "fastMode": True,
+            "crawlCommentsPerPost": True,
+            "maxPostsCount": 0,                  # only need comments back; posts are already in our DB
+            "maxCommentsPerPost": max_comments,
+            "maxCommentsCount": 0,
+            "maxCommunitiesCount": 0,
+            "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
+        }
+        result = self._apify_run("comments", payload, token=token)
+        if result is None:
+            return {}
+        items = result["items"]
+        print(f"[reddit:apify] comments ok: {len(items)} items "
+              f"(run_id={result['run_id']}, usage=${result['usage_usd']})")
+        # Build {postId: post_author} so we can stamp is_op without needing post objects upstream.
+        post_authors: dict[str, str] = {}
+        for it in items:
+            if (it.get("dataType") or "") != "post":
+                continue
+            pid = (it.get("parsedId") or it.get("id") or "").lstrip("t3_")
+            if pid and it.get("authorName"):
+                post_authors[pid] = it["authorName"]
+        # Build {postId: list_of_comment_dicts}
+        by_post: dict[str, list[dict]] = {}
+        for it in items:
+            if (it.get("dataType") or "") != "comment":
+                continue
+            pid_raw = it.get("parsedPostId") or it.get("postId") or it.get("parentId") or ""
+            pid = pid_raw[3:] if pid_raw.startswith("t3_") else pid_raw
+            if not pid:
+                continue
+            mapped = self._apify_comment_dict(it, post_authors.get(pid))
+            if mapped is None:
+                continue
+            by_post.setdefault(pid, []).append(mapped)
+        # Sort per-post by score desc, cap at max_comments. Then key by permalink (which is how
+        # _enrich_top_with_comments looks them up).
+        out: dict[str, list[dict]] = {}
+        for url in post_urls:
+            permalink = ""
+            if "reddit.com" in url:
+                idx = url.find("/r/")
+                if idx != -1:
+                    permalink = url[idx:]
+            if not permalink:
+                continue
+            # Recover postId from the permalink (`/r/<sub>/comments/<id>/<slug>/`).
+            parts = [p for p in permalink.split("/") if p]
+            pid = None
+            try:
+                pid = parts[parts.index("comments") + 1]
+            except (ValueError, IndexError):
+                pid = None
+            if not pid:
+                continue
+            lst = by_post.get(pid, [])
+            lst.sort(key=lambda c: c["score"], reverse=True)
+            cl = lst[:max_comments]
+            if cl:
+                out[permalink] = cl
+                self._apify_comments_by_permalink[permalink] = cl
+        return out
+
+    def _apify_comment_dict(self, c: dict, op_author: str | None) -> dict | None:
+        """Map a harshmaur comment object → our canonical comment dict (same shape that
+        parse_old_reddit_comments returns, so downstream code is identity).
+        """
+        body = (c.get("body") or "").strip()
+        author = c.get("authorName") or c.get("author") or ""
+        if not body or body in _DEAD_BODY_STRINGS or author in _COMMENT_AUTHOR_BLOCKLIST:
+            return None
+        if len(body) > _BODY_MAX_CHARS:
+            body = body[:_BODY_MAX_CHARS].rstrip() + "…(truncated)"
+        cid = c.get("parsedId") or c.get("id") or ""
+        fullname = cid if cid.startswith("t1_") else (f"t1_{cid}" if cid else "")
+        # harshmaur doesn't expose `is_submitter` directly; we compute via author equality.
+        is_op = bool(op_author) and author == op_author
+        return {
+            "id": fullname[3:] if fullname.startswith("t1_") else cid,
+            "fullname": fullname,
+            "author": author,
+            "score": int(c.get("commentUpVotes") or c.get("score") or 0),
+            "body": body,
+            "is_op": is_op,
+            "replies": 0,
+        }
+
+    # ---- mode: old_html (deprecated 2026-05-31; kept as a fallback when APIFY_TOKEN absent) ----
     def _fetch_old_html(self) -> list[HotItem]:
         """Scrape old.reddit.com/r/<sub>/<listing>/ HTML for each subreddit.
 
@@ -373,7 +738,13 @@ class RedditSource(Source):
         """
         if not permalink:
             return []
-        # Only old_html mode currently knows the bypass path; JSON mode would need a different URL.
+        # Apify path: comments were fetched inline by `_fetch_apify` and cached. Serve from
+        # memory — `_enrich_top_with_comments` (runner.py) is the only caller and it loops over
+        # Top-N items; we trade a network round-trip for an O(1) dict lookup.
+        if self.mode == "apify":
+            cached = self._apify_comments_by_permalink.get(permalink, [])
+            return cached[:max_comments]
+        # Old.reddit fallback: re-fetch the post page and parse.
         if self.mode != "old_html":
             return []
         url = f"{OLD_HTML_BASE}{permalink.rstrip('/')}/"
