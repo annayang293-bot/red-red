@@ -444,6 +444,41 @@ def test_runner_enrich_uses_batch_path_when_available():
     print("✅ test_runner_enrich_uses_batch_path_when_available")
 
 
+def test_default_config_comments_max_per_post_flows_through():
+    """🐞 Regression (Anna 2026-06-01): DEFAULT_CONFIG bumped `comments.max_per_post` 10 → 30, but
+    the value only matters if it actually reaches `fetch_comments_for_urls`. Lock the wiring:
+    runner reads `cfg["comments"]["max_per_post"]` and passes it as `max_comments`. If a future
+    refactor renames the cfg key, hardcodes a literal, or drops the read, this test goes red
+    before prod does.
+    """
+    from pipeline.config import DEFAULT_CONFIG
+    # The cfg is the source of truth — assert the new value is wired.
+    assert DEFAULT_CONFIG["comments"]["max_per_post"] == 30, DEFAULT_CONFIG["comments"]
+
+    captured: dict = {}
+
+    class _BatchSrc:
+        name = "reddit"
+
+        def fetch_comments_for_urls(self, urls, max_comments=10):
+            captured["max_comments"] = max_comments
+            return {}
+
+    item = HotItem(
+        id=make_id("reddit", "p"), dedup_key=canonical_url("https://www.reddit.com/r/OpenAI/comments/p/x/"),
+        title="t", source="reddit", source_native_id="p",
+        url="https://www.reddit.com/r/OpenAI/comments/p/x/",
+        author="u", published_at="2026-05-31T12:00:00+00:00", captured_at="2026-05-31T13:00:00+00:00",
+        lang="en", media_type="text",
+        raw_metrics={"likes": 1, "upvotes": 1, "comments": 0, "saves": 0},
+        source_native={"subreddit": "OpenAI", "permalink": "/r/OpenAI/comments/p/x/", "fetch_mode": "apify"},
+        tags=["OpenAI"], raw_snippet="",
+    )
+    _enrich_top_with_comments([_BatchSrc()], [item], DEFAULT_CONFIG)
+    assert captured["max_comments"] == 30, captured
+    print("✅ test_default_config_comments_max_per_post_flows_through")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

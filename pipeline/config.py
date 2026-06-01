@@ -39,5 +39,13 @@ DEFAULT_CONFIG = {
         "daily_top_n": 20,
         "store_top_n": 50,
     },
+    "comments": {
+        # Per Top-N item, how many top-scored comments to attach as `source_native.comments`
+        # (then surfaced as `comments_summary` in the report). Anna 2026-05-31: bumped 10 → 30
+        # so System ② has more raw material per item to draft from. Budget at $0.0013/item still
+        # well under Anna's $30/mo Apify cap (20 × 30 = 600 comments/run × ~$0.0013 + listing
+        # overhead ≈ $0.80/run × 30 ≈ $24/mo).
+        "max_per_post": 30,
+    },
     "keywords": DEFAULT_KEYWORDS,
 }
