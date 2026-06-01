@@ -93,8 +93,17 @@ export default function HistoryTab({
       ) : (
         <div className="rounded-xl border border-line bg-panel">
           {runs.map((r, i) => {
-            const date = (r.started_at || "").slice(0, 10);
-            const time = (r.started_at || "").slice(11, 16);
+            // `r.started_at` is an ISO timestamp with Z/+00:00 offset (Supabase serializes
+            // timestamptz that way). Slicing it directly would surface UTC literals to the
+            // user — Anna 2026-06-01 caught a Run-54 row that read "2026-06-01 00:22" when she
+            // actually clicked Run on 5/31 17:22 PDT. Going through `new Date()` lets the
+            // browser convert to whatever locale/tz the user's system reports.
+            // The runs list only renders client-side (gated behind the `loading` flag in
+            // pages/index.tsx, which awaits a client useEffect fetch), so there's no SSR
+            // hydration mismatch from this.
+            const ts = r.started_at ? new Date(r.started_at) : null;
+            const date = ts ? ts.toLocaleDateString() : "";
+            const time = ts ? ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
             const isAi = r.ai_mode === "ai";
             return (
               <button
