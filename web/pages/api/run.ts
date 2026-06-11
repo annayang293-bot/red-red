@@ -13,6 +13,7 @@
  */
 import type { NextApiRequest, NextApiResponse } from "next";
 import { ensureMethod, failError } from "@/lib/api";
+import { getSupabaseAdmin } from "@/lib/supabase-server";
 
 const GITHUB_API = "https://api.github.com";
 // Hardcoded for this project (Anna 2026-05-31): single repo, single workflow file. Keeps the
@@ -22,6 +23,11 @@ const REPO_OWNER = "annayang293-bot";
 const REPO_NAME = "red-red";
 const WORKFLOW_FILE = "on-demand-run.yml";
 const WORKFLOW_REF = "main";
+
+// Re-run guard (Anna 2026-06-11): reject on-demand runs within this window of the topic's last
+// run, to protect the Apify budget — a burst of manual re-runs blew the $29/mo STARTER cap. The
+// daily cron is unaffected (it's a separate trigger). Pass { force: true } to override.
+const MIN_RUN_INTERVAL_HOURS = 6;
 
 // Topic allowlist — defense-in-depth alongside the workflow's env-indirection fix
 // (Rex Phase 1, 2026-05-31). The workflow no longer interpolates `${{ inputs.topic }}` into
@@ -42,6 +48,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       message:
         "Topic must be 1–80 chars of letters, digits, spaces, '_', or '-' only.",
     });
+  }
+
+  // Re-run guard: skip if this topic ran within MIN_RUN_INTERVAL_HOURS. Fail-open — a guard-query
+  // error never blocks a run. `force: true` overrides (e.g. a "run anyway?" confirm in the UI).
+  const force = req.body?.force === true;
+  if (!force) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data } = await sb
+        .from("runs")
+        .select("started_at")
+        .eq("topic_keyword", topic)
+        .order("started_at", { ascending: false })
+        .limit(1);
+      const last = data?.[0]?.started_at as string | undefined;
+      if (last) {
+        const hoursAgo = (Date.now() - new Date(last).getTime()) / 3.6e6;
+        if (hoursAgo < MIN_RUN_INTERVAL_HOURS) {
+          return res.status(429).json({
+            error: "ran_recently",
+            message: `这个主题 ${hoursAgo.toFixed(1)} 小时前刚跑过(护栏 ${MIN_RUN_INTERVAL_HOURS}h，省 Apify 额度）。要强制再跑传 force:true。`,
+            hours_ago: Number(hoursAgo.toFixed(1)),
+            min_interval_hours: MIN_RUN_INTERVAL_HOURS,
+          });
+        }
+      }
+    } catch {
+      // fail-open: don't block a run if the recency check itself errors
+    }
   }
 
   const pat = process.env.GITHUB_PAT;

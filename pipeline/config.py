@@ -41,11 +41,18 @@ DEFAULT_CONFIG = {
     },
     "comments": {
         # Per Top-N item, how many top-scored comments to attach as `source_native.comments`
-        # (then surfaced as `comments_summary` in the report). Anna 2026-05-31: bumped 10 → 30
-        # so System ② has more raw material per item to draft from. Budget at $0.0013/item still
-        # well under Anna's $30/mo Apify cap (20 × 30 = 600 comments/run × ~$0.0013 + listing
-        # overhead ≈ $0.80/run × 30 ≈ $24/mo).
-        "max_per_post": 30,
+        # (then surfaced as `comments_summary` in the report + System ② drafting material).
+        # Anna 2026-06-11: reverted 30 → 10. The 30 bump (2026-05-31) pushed per-run cost to
+        # ~$0.72-0.80 (≈$24/mo @1 run/day), and combined with manual re-runs blew the $29 Apify
+        # STARTER cap by 2026-06-08. Back to 10 = ~$0.45/run ≈ ~$13/mo @1 run/day (the original
+        # budget); 10 comments is the level that produced 稿件001 S+ and the cognitive-debt draft.
+        "max_per_post": 10,
+    },
+    "reddit": {
+        # Listing scrape size per subreddit (drives the Apify listing-run cost — residential proxy
+        # GB + compute). Anna 2026-06-11 cost control: 60 → 30. 30/sub × 6 subs = 180 candidates,
+        # still ample for a Top-20 (run #71 passed 68 from 360; 180 leaves comfortable headroom).
+        "fetch_limit_per_sub": 30,
     },
     "keywords": DEFAULT_KEYWORDS,
 }
