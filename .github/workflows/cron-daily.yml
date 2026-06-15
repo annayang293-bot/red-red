@@ -1,16 +1,17 @@
-# Daily scheduled pipeline run.
-# 09:00 America/Los_Angeles = 16:00 UTC (LA is UTC-8 in standard time / UTC-7 in DST). GitHub Actions
-# `schedule.cron` runs in UTC; the 1-hour DST drift is acceptable for a "fresh report each morning"
-# product. If we ever want exact 09:00 LA year-round, we'd need two schedules or a runtime guard.
+# Daily pipeline run — triggered by VERCEL CRON, not GitHub's own scheduler.
 #
-# Topic is hard-coded here because `schedule` triggers don't accept inputs. If the active topic
-# changes, update this file (or move to a config-driven trigger, e.g. reading topics.active from DB).
+# 2026-06-15: removed the GitHub `schedule:` trigger. GitHub Actions cron is best-effort and
+# routinely delayed / dropped under load — on 2026-06-15 the 16:00 UTC run simply never fired.
+# The reliable trigger is now Vercel Cron (`web/vercel.json` crons → `web/pages/api/cron/daily.ts`),
+# which fires daily at 16:00 UTC and dispatches THIS workflow via the REST API. We must NOT keep
+# both triggers — that would run the pipeline twice a day (double Apify cost).
+#
+# Topic is hard-coded here (dispatch carries no inputs). If the active topic changes, update this
+# file (or move to a config-driven trigger, e.g. reading topics.active from DB).
 name: Cron — daily pipeline
 
 on:
-  schedule:
-    - cron: '0 16 * * *'
-  # Allow manual trigger of the cron path too, for ops / one-off debugging without changing the topic.
+  # Dispatched by Vercel Cron (see above) and usable manually from the GH Actions UI for ops.
   workflow_dispatch:
 
 permissions:
