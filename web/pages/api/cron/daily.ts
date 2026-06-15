@@ -10,9 +10,18 @@
  * Auth: Vercel attaches `Authorization: Bearer $CRON_SECRET` to cron invocations when the
  * CRON_SECRET env var is set. We REQUIRE it to match — this endpoint kicks off a paid (~$0.72)
  * Apify run, so it must not be publicly triggerable. If CRON_SECRET is unset we fail closed (401).
+ *
+ * The GitHub dispatch is inlined (mirrors /api/run.ts) on purpose: the shared dispatchWorkflow()
+ * helper lives in lib/gh-dispatch.ts which belongs to the not-yet-shipped System ②, so importing
+ * it would couple this System ① endpoint to unshipped code.
  */
 import type { NextApiRequest, NextApiResponse } from "next";
-import { dispatchWorkflow } from "@/lib/gh-dispatch";
+
+const GITHUB_API = "https://api.github.com";
+const REPO_OWNER = "annayang293-bot";
+const REPO_NAME = "red-red";
+const WORKFLOW_FILE = "cron-daily.yml"; // dispatch-only; topic hard-coded inside, triggered_by=cron
+const WORKFLOW_REF = "main";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
@@ -26,10 +35,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(401).json({ error: "unauthorized" });
   }
 
-  // cron-daily.yml takes no inputs (topic is hard-coded in the workflow, triggered_by=cron).
-  const result = await dispatchWorkflow("cron-daily.yml", {});
-  if (!result.dispatched) {
-    return res.status(502).json({ ok: false, error: "dispatch_failed", ...result });
+  const pat = process.env.GITHUB_PAT;
+  if (!pat) {
+    return res.status(500).json({ error: "missing_github_pat" });
   }
-  return res.status(200).json({ ok: true, dispatched: true, workflow: "cron-daily.yml" });
+
+  try {
+    // cron-daily.yml defines no inputs, so the dispatch body carries only the ref.
+    const ghRes = await fetch(
+      `${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${pat}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+          "User-Agent": "red-red-vercel-cron",
+        },
+        body: JSON.stringify({ ref: WORKFLOW_REF }),
+      }
+    );
+
+    if (ghRes.status === 204) {
+      return res.status(200).json({ ok: true, dispatched: true, workflow: WORKFLOW_FILE });
+    }
+    const errBody = await ghRes.text();
+    return res.status(502).json({
+      error: "dispatch_failed",
+      status: ghRes.status,
+      message: errBody.slice(0, 300),
+    });
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ error: "dispatch_exception", message: e instanceof Error ? e.message : String(e) });
+  }
 }
