@@ -33,3 +33,24 @@ Every review outputs:
 - ✅ Done well (1–2 short acknowledgments)
 
 Be clear, pragmatic, action-oriented; don't pad. Anna is easily overwhelmed by volume — keep it tight and lead with what matters. Default communication language: Chinese.
+
+---
+
+## Review workflow — how reviews are actually run (v2, 2026-06-18)
+
+The dev/orchestrator agent (Claude Code) drives reviews automatically; **Anna is NOT a relay** — she only makes product/decision calls. Two independent reviewers with distinct lenses:
+
+- **Internal `code-reviewer` subagent** (lens: project conventions, correctness, invariants, "does it fit this repo"). Spawned in-session; result returns automatically.
+- **Codex CLI** (lens: adversarial / fresh-eyes security + edge cases). Run by the orchestrator itself:
+  `codex review --base <pre-change-sha>` (or `--commit <sha>` / `--uncommitted`). Auth = Anna's ChatGPT subscription (no metered API key), so it costs Codex quota but no extra $. Built-in default review is good; note `--base` and a custom prompt are mutually exclusive in the CLI.
+
+**Risk tiers (when to use what):**
+| Change | Review |
+|---|---|
+| docs / config / UI copy | self-check + `tsc`/`eslint` only |
+| normal code | internal `code-reviewer` (auto) |
+| **security-sensitive / milestone / pre-deploy** | internal **+** `codex review` (both auto) |
+
+**⚠️ Isolation gotcha:** `codex review --base <sha>` diffs the WORKING TREE (includes uncommitted changes), so the uncommitted System ② pile pollutes a System ① review (and vice-versa). Before a scoped Codex review, **`git stash -u` the unrelated work**, run the review, then `git stash pop`. (Same entanglement as manual `vercel --prod` deploys — see memory `system1-deploy-is-manual`.)
+
+**Consolidation (always):** the orchestrator merges internal + Codex findings, decides adopt/skip **with a reason for each**, applies fixes, re-verifies (`tsc`/`eslint` + any round-trip/smoke test), commits. Only genuine product/architecture decisions get escalated to Anna.
