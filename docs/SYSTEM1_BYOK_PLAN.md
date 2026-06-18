@@ -1,6 +1,6 @@
 # System ① 多用户 / BYOK / Workspace 开发计划 (v1)
 
-> 状态:**设计已定稿,尚未动代码**。落地按 Phase 推进,每个 Phase 你 review、说"开始 Phase X"我才写代码。
+> 状态:**Phase 0 已完成上线(2026-06-18)**;Phase 1 起待续。落地按 Phase 推进,每个 Phase 你 review、说"开始 Phase X"我才写代码。
 > 拟定日期:2026-06-17。作者:Anna + Claude。
 
 ---
@@ -102,11 +102,12 @@ report_top20 / posts_archive     -- 经 run_id 归属到某 workspace
 
 ## 7. 分期计划(先手动后自动,每步带验收点)
 
-### Phase 0 — 身份 + workspace 地基
+### Phase 0 — 身份 + workspace 地基 ✅ 已完成(2026-06-18)
 - Supabase Auth 邮箱 magic-link 登录 + 最简登录 UI。
 - 建 `workspaces` / `workspace_members`;注册即建个人 workspace(owner)。
-- `runs` 加 `workspace_id`;回填 Anna 的 #1–86;全表 RLS。
-- **验收**:Anna 登录后能看到自己 86 条历史;另开一个测试账号看不到任何东西。
+- `runs` 加 `workspace_id`;回填 Anna 的旧历史;全表 RLS。
+- **结果**:迁移 `0011` 上线;登录端到端跑通;Anna 账号 = `annayang5757@hotmail.com`,自动建了工作区;回填 66 条(#11–86)。
+- **遗留**:"另一个账号看不到"这条要等报告读取切到 RLS 才真正生效(见部署前清单)。
 
 ### Phase 1 — Token 保险库
 - `apify_credentials` 表 + RLS。
@@ -140,6 +141,15 @@ report_top20 / posts_archive     -- 经 run_id 归属到某 workspace
 - 系统②(star/draft)的 workspace 化:等系统② 真正上线时一并加 `workspace_id`。
 - 多 workspace 切换 UI(用户属于多个工作区时)—— Phase 3 后视需要。
 - 部署仍是手动 `vercel --prod`(见记忆 system1-deploy-is-manual);多用户上线前考虑配 git 自动部署。
+
+---
+
+## 8.5 部署前清单(开放给多人前必办)
+- **配自定义 SMTP**(强烈建议 Resend 免费档 3,000 封/月,成本 ≈ $0):Supabase 自带发信限 **2 封/小时、仅供测试**;多人登录前必须接自己的发信服务,否则第 3 个人在同一小时就收不到登录邮件。可选自有域名(~$10/年,提升送达率、避免进垃圾箱),非必须。配置:注册 Resend → (可选)验证域名 → 拿 SMTP 凭证 → 填进 Supabase Authentication → SMTP Settings。
+- **Vercel 环境变量**:加 `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`(Production)。`NEXT_PUBLIC_*` 在 build 时内联,不配的话线上登录页会报 configError。
+- **报告读取切到 RLS**:目前读取走 service key(全局),"别的工作区看不到你的"尚未真正生效;开放多人前需把报告读取改成用户 JWT + anon key,让 RLS 真隔离。
+- **登录 gate = 整站需登录**:部署后线上必须登录才能看,确认这是你要的再部署。
+- 部署动作本身仍是手动 `vercel --prod`(先 stash 系统②),见 `memory/system1-deploy-is-manual`。
 
 ---
 
