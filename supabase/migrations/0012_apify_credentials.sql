@@ -42,5 +42,10 @@ CREATE TRIGGER set_updated_at
   BEFORE UPDATE ON apify_credentials
   FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 
--- Server-only: RLS on, but no policies + no authenticated grant → only the service role reaches it.
+-- Server-only lockdown. RLS on + zero policies already makes RLS default-deny every row, but
+-- Supabase's default privileges auto-GRANT ALL on new public tables to anon/authenticated, so we
+-- must EXPLICITLY REVOKE to lock the table at the privilege layer too (PostgREST denies before RLS
+-- even runs). The service_role keeps its own grants + bypasses RLS, so server API routes are
+-- unaffected.
 ALTER TABLE apify_credentials ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON apify_credentials FROM anon, authenticated;
