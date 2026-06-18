@@ -149,6 +149,7 @@ report_top20 / posts_archive     -- 经 run_id 归属到某 workspace
 - **Vercel 环境变量**:加 `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`(Production)。`NEXT_PUBLIC_*` 在 build 时内联,不配的话线上登录页会报 configError。
 - **报告读取切到 RLS**:目前读取走 service key(全局),"别的工作区看不到你的"尚未真正生效;开放多人前需把报告读取改成用户 JWT + anon key,让 RLS 真隔离。
 - **登录 gate = 整站需登录**:部署后线上必须登录才能看,确认这是你要的再部署。
+- **i18n 整套 BYOK UI**(批量做):`LoginScreen`、`settings.tsx`、`_app.tsx` 的「设置」chip 现在是硬编码中文(违反 `useT()` 约定)。给 Anna/Junxi 用没问题,但开放给英文用户前要走 `lib/i18n.ts` 加 zh/en。一次性做,别零散。
 - 部署动作本身仍是手动 `vercel --prod`(先 stash 系统②),见 `memory/system1-deploy-is-manual`。
 
 ---
