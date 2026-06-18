@@ -18,16 +18,18 @@ const APIFY_API = "https://api.apify.com/v2";
 /** Confirm the token is live by calling Apify (Bearer header — never the token in the URL/query). */
 async function validateApifyToken(
   token: string,
-): Promise<{ ok: boolean; username?: string }> {
+): Promise<{ ok: boolean; username?: string; networkError?: boolean }> {
   try {
     const r = await fetch(`${APIFY_API}/users/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!r.ok) return { ok: false };
+    if (!r.ok) return { ok: false }; // Apify rejected → token invalid/no perms
     const j = (await r.json()) as { data?: { username?: string } };
     return { ok: true, username: j?.data?.username };
   } catch {
-    return { ok: false };
+    // Couldn't reach Apify at all — distinct from "token invalid" so we don't wrongly tell the
+    // user their valid token is bad during an Apify outage.
+    return { ok: false, networkError: true };
   }
 }
 
@@ -44,12 +46,20 @@ async function resolveCaller(
     error,
   } = await sb.auth.getUser(accessToken);
   if (error || !user) return null;
-  const { data } = await sb
+  // Phase 1: the token belongs to the workspace OWNER, and each user owns exactly one workspace
+  // (auto-created at signup), so we scope to the owned workspace. (Phase 3, once members can be
+  // invited into other workspaces + there's a workspace switcher, GET should also let a member
+  // read the shared workspace's token status — revisit then.)
+  const { data, error: wsErr } = await sb
     .from("workspaces")
     .select("id")
     .eq("owner_id", user.id)
     .order("created_at", { ascending: true })
     .limit(1);
+  if (wsErr) {
+    console.error("[apify-token] workspace lookup error:", wsErr.message);
+    return null; // fail closed (caller sees 401)
+  }
   const workspaceId = data?.[0]?.id as string | undefined;
   if (!workspaceId) return null;
   return { userId: user.id, workspaceId };
@@ -80,10 +90,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const v = await validateApifyToken(token);
     if (!v.ok) {
-      return res.status(400).json({
-        error: "invalid_token",
-        message: "这个 Apify token 无效或没权限(Apify GET /users/me 没通过)。",
-      });
+      // Error codes only — the UI maps them to localized text (lib/i18n.ts).
+      if (v.networkError) return res.status(502).json({ error: "apify_unreachable" });
+      return res.status(400).json({ error: "invalid_token" });
     }
 
     const enc = encryptToken(token, caller.workspaceId); // AAD = workspace_id
@@ -101,7 +110,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       { onConflict: "workspace_id" },
     );
-    if (error) return res.status(500).json({ error: "store_failed", message: error.message });
+    if (error) {
+      console.error("[apify-token POST] store error:", error.message);
+      return res.status(500).json({ error: "store_failed" });
+    }
     return res.status(200).json({ ok: true, last6: token.slice(-6), username: v.username ?? null });
   }
 
@@ -110,7 +122,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .from("apify_credentials")
       .delete()
       .eq("workspace_id", caller.workspaceId);
-    if (error) return res.status(500).json({ error: "delete_failed", message: error.message });
+    if (error) {
+      console.error("[apify-token DELETE] delete error:", error.message);
+      return res.status(500).json({ error: "delete_failed" });
+    }
     return res.status(200).json({ ok: true });
   }
 
