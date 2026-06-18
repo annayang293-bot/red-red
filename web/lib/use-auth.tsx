@@ -32,11 +32,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!configured) return; // nothing to load; loading is already false
+    // supabase-js v2 fires an INITIAL_SESSION event right after subscribing, so onAuthStateChange
+    // alone covers the initial session load — no separate getSession() (which would be a redundant
+    // race that settles to the same value).
     const sb = getSupabaseBrowser();
-    sb.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setLoading(false);
-    });
     const { data: sub } = sb.auth.onAuthStateChange((_event, s) => {
       setSession(s);
       setLoading(false);
