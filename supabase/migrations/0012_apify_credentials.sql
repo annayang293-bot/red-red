@@ -13,6 +13,12 @@
 --   So we ENABLE RLS but add NO policies and NO grant to `authenticated`/`anon` — that makes the
 --   table invisible to every per-user (anon-key) query, while the service role (which bypasses
 --   RLS and already has privileges) keeps full access. Maximum lockdown for a secrets table.
+--
+-- IMPORTANT for the Phase 1-B encryption helper: the AES-256-GCM call MUST pass workspace_id (as
+-- UTF-8 bytes) as the AAD (Additional Authenticated Data — bytes that are authenticated but not
+-- encrypted). This binds each ciphertext to its workspace: decrypting under a different
+-- workspace_id fails the auth-tag check, so a token row can't be moved across workspaces
+-- undetected. (No column needed — AAD lives only in the crypto call.)
 -- ============================================================
 
 CREATE TABLE apify_credentials (
@@ -25,10 +31,16 @@ CREATE TABLE apify_credentials (
   -- Display / audit (safe, non-secret):
   token_last6      TEXT,                          -- last 6 chars, shown in UI so a user IDs the token
   account_username TEXT,                          -- Apify username from GET /users/me at validation
-  validated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  validated_at     TIMESTAMPTZ,                   -- set by the API route AFTER GET /users/me confirms live; NULL = unverified
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Keep updated_at fresh automatically (function defined in 0001; this table post-dates the
+-- bulk attach there, so wire it explicitly).
+CREATE TRIGGER set_updated_at
+  BEFORE UPDATE ON apify_credentials
+  FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 
 -- Server-only: RLS on, but no policies + no authenticated grant → only the service role reaches it.
 ALTER TABLE apify_credentials ENABLE ROW LEVEL SECURITY;
