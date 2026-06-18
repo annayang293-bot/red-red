@@ -34,7 +34,7 @@ async function authedFetch(input: string, init?: RequestInit) {
   } = await getSupabaseBrowser().auth.getSession();
   const headers = new Headers(init?.headers);
   if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
-  headers.set("Content-Type", "application/json");
+  if (init?.body) headers.set("Content-Type", "application/json");
   return fetch(input, { ...init, headers });
 }
 
@@ -90,6 +90,7 @@ export default function SettingsPage() {
       } else {
         setToken("");
         setEditing(false);
+        setLoading(true); // show spinner during the status re-fetch (avoid a form-flash)
         setReloadKey((k) => k + 1);
       }
     } catch {
@@ -110,6 +111,7 @@ export default function SettingsPage() {
         const j = await r.json().catch(() => ({}));
         setErr(errText(j?.error));
       } else {
+        setLoading(true);
         setReloadKey((k) => k + 1);
       }
     } catch {
@@ -174,6 +176,7 @@ export default function SettingsPage() {
               <input
                 type="password"
                 autoComplete="off"
+                aria-label="Apify token"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 placeholder="apify_api_..."
