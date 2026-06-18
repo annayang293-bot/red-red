@@ -49,8 +49,8 @@ The dev/orchestrator agent (Claude Code) drives reviews automatically; **Anna is
 |---|---|
 | docs / config / UI copy | self-check + `tsc`/`eslint` only |
 | normal code | internal `code-reviewer` (auto) |
-| **security-sensitive / milestone / pre-deploy** | internal **+** `codex review` (both auto) |
+| **security-sensitive / milestone / pre-deploy** | internal **+** `codex review` — **run CONCURRENTLY** (both auto, same turn) |
 
-**⚠️ Isolation gotcha:** `codex review --base <sha>` diffs the WORKING TREE (includes uncommitted changes), so the uncommitted System ② pile pollutes a System ① review (and vice-versa). Before a scoped Codex review, **`git stash -u` the unrelated work**, run the review, then `git stash pop`. (Same entanglement as manual `vercel --prod` deploys — see memory `system1-deploy-is-manual`.)
+**⚠️ Isolation gotcha:** `codex review --base <sha>` diffs the WORKING TREE (includes uncommitted changes), so the uncommitted System ② pile pollutes a System ① review (and vice-versa). Before a scoped Codex review, **`git stash -u` the unrelated work**, run the review, then `git stash pop`. With concurrent reviews the sequence is: **stash → launch internal reviewer + `codex review` in the same turn (parallel) → after BOTH return, pop**. (Same entanglement as manual `vercel --prod` deploys — see memory `system1-deploy-is-manual`.)
 
 **Consolidation (always):** the orchestrator merges internal + Codex findings, decides adopt/skip **with a reason for each**, applies fixes, re-verifies (`tsc`/`eslint` + any round-trip/smoke test), commits. Only genuine product/architecture decisions get escalated to Anna.
