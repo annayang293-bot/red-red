@@ -34,6 +34,7 @@ export const strings: Strings = {
     "side.langLabel": "界面",
     "side.langZh": "中",
     "side.langEn": "EN",
+    "side.signOut": "退出",
 
     // RunTab
     "run.heading.run": "🚀 跑一次",
@@ -80,6 +81,17 @@ export const strings: Strings = {
     "star.all": "全部",
     "star.empty": "还没有收藏 —— 去 “跑一次” 点标题左侧的 ☆",
     "star.emptyForFilter": "这个来源还没收藏(换一个筛选或选 “全部”)",
+
+    // Star popup + undo toast (System ②, Step 2)
+    "star.modal.title": "给这条加个方向?",
+    "star.modal.hintLabel": "想给写稿团队的方向(可选)",
+    "star.modal.hintPlaceholder": "例:从职场新人角度切,别太技术 / 这次 Anna 出镜",
+    "star.modal.direct": "直接收藏",
+    "star.modal.withHint": "加方向后收藏",
+    "star.modal.cancel": "取消",
+    "star.undo.star": "已收藏",
+    "star.undo.unstar": "已取消收藏",
+    "star.undo.undo": "撤回",
 
     // HistoryTab
     "history.heading": "📅 历史",
@@ -144,6 +156,7 @@ export const strings: Strings = {
     "side.langLabel": "Lang",
     "side.langZh": "中",
     "side.langEn": "EN",
+    "side.signOut": "Sign out",
 
     // RunTab
     "run.heading.run": "🚀 Run",
@@ -190,6 +203,17 @@ export const strings: Strings = {
     "star.all": "All",
     "star.empty": "Nothing starred yet — head to \"Run\" and click ☆ next to a title",
     "star.emptyForFilter": "No starred items for this source (pick another filter or \"All\")",
+
+    // Star popup + undo toast (System ②, Step 2)
+    "star.modal.title": "Add a direction?",
+    "star.modal.hintLabel": "Direction for the writing team (optional)",
+    "star.modal.hintPlaceholder": "e.g. angle it for career newcomers, not too technical",
+    "star.modal.direct": "Star directly",
+    "star.modal.withHint": "Star with direction",
+    "star.modal.cancel": "Cancel",
+    "star.undo.star": "Starred",
+    "star.undo.unstar": "Unstarred",
+    "star.undo.undo": "Undo",
 
     // HistoryTab
     "history.heading": "📅 History",

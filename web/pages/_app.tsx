@@ -1,6 +1,5 @@
 import "@/styles/globals.css";
 import type { AppProps } from "next/app";
-import Link from "next/link";
 import { LangContext, useLangState } from "@/lib/i18n";
 import { AuthProvider, useAuth } from "@/lib/use-auth";
 import LoginScreen from "@/components/LoginScreen";
@@ -8,7 +7,7 @@ import LoginScreen from "@/components/LoginScreen";
 // Gate every page behind auth (System ① BYOK, Phase 0-B). API routes are NOT affected — _app only
 // wraps UI pages — so the cron endpoint, /api/run, etc. keep working unauthenticated as before.
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const { loading, session, configError, signOut } = useAuth();
+  const { loading, session, configError } = useAuth();
 
   if (configError) {
     return (
@@ -33,27 +32,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (!session) return <LoginScreen />;
 
-  return (
-    <>
-      <div className="fixed top-3 right-3 z-50 flex items-center gap-2">
-        <Link
-          href="/settings"
-          className="rounded-full border border-neutral-300 dark:border-neutral-700 bg-white/80 dark:bg-neutral-900/80 px-3 py-1 text-xs text-neutral-600 dark:text-neutral-300 backdrop-blur"
-        >
-          设置
-        </Link>
-        <button
-          type="button"
-          onClick={signOut}
-          title={session.user.email ?? ""}
-          className="rounded-full border border-neutral-300 dark:border-neutral-700 bg-white/80 dark:bg-neutral-900/80 px-3 py-1 text-xs text-neutral-600 dark:text-neutral-300 backdrop-blur"
-        >
-          {session.user.email} · 退出
-        </button>
-      </div>
-      {children}
-    </>
-  );
+  return <>{children}</>;
 }
 
 export default function App({ Component, pageProps }: AppProps) {

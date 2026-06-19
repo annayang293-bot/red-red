@@ -1,5 +1,6 @@
 import { TabKey } from "@/lib/types";
 import { useT } from "@/lib/i18n";
+import { useAuth } from "@/lib/use-auth";
 
 const TABS: { key: TabKey; tkey: string; icon: string }[] = [
   { key: "run", tkey: "side.tab.run", icon: "🚀" },
@@ -18,6 +19,7 @@ export default function Sidebar({
   starCount: number;
 }) {
   const { t, lang, setLang } = useT();
+  const { session, signOut } = useAuth();
   return (
     <aside className="w-52 shrink-0 border-r border-line bg-panel p-3 md:sticky md:top-0 md:h-screen md:flex md:flex-col">
       <div className="px-3 pb-4 pt-2">
@@ -50,28 +52,40 @@ export default function Sidebar({
         })}
       </nav>
 
-      {/* Language toggle — bottom of the sidebar so it's out of the way but always reachable */}
-      <div className="mt-auto flex items-center gap-1 px-3 pt-4 text-[11px] text-mut">
-        <span>{t("side.langLabel")}</span>
-        <button
-          onClick={() => setLang("zh")}
-          className={
-            "rounded px-1.5 py-0.5 " +
-            (lang === "zh" ? "bg-terrasoft font-semibold text-terra" : "hover:bg-terrasoft")
-          }
-        >
-          {t("side.langZh")}
-        </button>
-        <span className="text-line">|</span>
-        <button
-          onClick={() => setLang("en")}
-          className={
-            "rounded px-1.5 py-0.5 " +
-            (lang === "en" ? "bg-terrasoft font-semibold text-terra" : "hover:bg-terrasoft")
-          }
-        >
-          {t("side.langEn")}
-        </button>
+      {/* Account + language toggle — pinned to the sidebar bottom (always reachable, out of the way) */}
+      <div className="mt-auto pt-4">
+        {session && (
+          <div className="border-t border-line px-3 pb-2 pt-3 text-[11px] text-mut">
+            <div className="truncate" title={session.user.email ?? ""}>
+              {session.user.email}
+            </div>
+            <button onClick={signOut} className="mt-0.5 text-terra hover:underline">
+              {t("side.signOut")}
+            </button>
+          </div>
+        )}
+        <div className="flex items-center gap-1 px-3 pt-1 text-[11px] text-mut">
+          <span>{t("side.langLabel")}</span>
+          <button
+            onClick={() => setLang("zh")}
+            className={
+              "rounded px-1.5 py-0.5 " +
+              (lang === "zh" ? "bg-terrasoft font-semibold text-terra" : "hover:bg-terrasoft")
+            }
+          >
+            {t("side.langZh")}
+          </button>
+          <span className="text-line">|</span>
+          <button
+            onClick={() => setLang("en")}
+            className={
+              "rounded px-1.5 py-0.5 " +
+              (lang === "en" ? "bg-terrasoft font-semibold text-terra" : "hover:bg-terrasoft")
+            }
+          >
+            {t("side.langEn")}
+          </button>
+        </div>
       </div>
     </aside>
   );
