@@ -145,12 +145,28 @@ report_top20 / posts_archive     -- 经 run_id 归属到某 workspace
 ---
 
 ## 8.5 部署前清单(开放给多人前必办)
-- **配自定义 SMTP**(强烈建议 Resend 免费档 3,000 封/月,成本 ≈ $0):Supabase 自带发信限 **2 封/小时、仅供测试**;多人登录前必须接自己的发信服务,否则第 3 个人在同一小时就收不到登录邮件。可选自有域名(~$10/年,提升送达率、避免进垃圾箱),非必须。配置:注册 Resend → (可选)验证域名 → 拿 SMTP 凭证 → 填进 Supabase Authentication → SMTP Settings。
+- **配自定义 SMTP = 用 Resend**(成本 ≈ $0,Junxi 已有 Resend 账号/经验):Supabase 自带发信限 **2 封/小时、仅供测试**;多人登录前必须接自己的发信服务,否则第 3 个人在同一小时就收不到登录邮件。
+  - **Resend 是 Supabase 官方集成**:装上后自动建 API key + 自动填好 Supabase 的 SMTP 设置(不用手抄)。也可手动配:host `smtp.resend.com`、port `465`、user `resend`、pass = Resend API key。
+  - 免费档 **3,000 封/月、100/天、永久免费**,我们登录邮件量远远用不完 → $0。
+  - 需验证一个发信域名(送达率;域名约 $10/年,可选,测试可先用 Resend 测试域名)。注意有 `{{ .MagicLink }}` 模板不渲染的小坑(配时检查邮件模板)。
 - **Vercel 环境变量**:加 `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`(Production)。`NEXT_PUBLIC_*` 在 build 时内联,不配的话线上登录页会报 configError。
 - **报告读取切到 RLS**:目前读取走 service key(全局),"别的工作区看不到你的"尚未真正生效;开放多人前需把报告读取改成用户 JWT + anon key,让 RLS 真隔离。
 - **登录 gate = 整站需登录**:部署后线上必须登录才能看,确认这是你要的再部署。
-- **i18n 整套 BYOK UI**(批量做):`LoginScreen`、`settings.tsx`、`_app.tsx` 的「设置」chip 现在是硬编码中文(违反 `useT()` 约定)。给 Anna/Junxi 用没问题,但开放给英文用户前要走 `lib/i18n.ts` 加 zh/en。一次性做,别零散。
+- **i18n 整套 BYOK UI**(批量做):`LoginScreen`、`SettingsTab`(Apify token 那块)现在是硬编码中文(违反 `useT()` 约定)。给 Anna/Junxi 用没问题,但开放给英文用户前要走 `lib/i18n.ts` 加 zh/en。一次性做,别零散。
 - 部署动作本身仍是手动 `vercel --prod`(先 stash 系统②),见 `memory/system1-deploy-is-manual`。
+
+---
+
+## 8.6 最终交付 — 重写 README(收尾,最后做)
+当前 README 较粗糙。收尾时要写一份**详细、能照着用 + 能维护**的 README,至少覆盖:
+- **怎么用**:输入什么(主题/token)→ 跑什么(手动「开始跑」/ 每日自动)→ 出什么(Top-20 报告在哪看)。
+- **架构一句话**:Vercel 网页 + Supabase + GitHub Actions runner + Apify/OpenAI;各干什么。
+- **维护 / 充钱**:用了哪些账号 + 各自充什么钱:
+  - Apify(账号 `guagua`,STARTER $29/月,抓 Reddit;BYOK 后每人自带 token)
+  - OpenAI(`OPENAI_API_KEY`,gpt-4o-mini,选题分档,按量)
+  - Supabase(数据库 + Auth)、Vercel(网页托管)、GitHub Actions(跑 pipeline)、Resend(发信,免费档)
+- **所有密钥/环境变量清单**:在哪配(`.env` / Vercel env / GitHub secrets)、各是什么用途、怎么轮换。
+- **常见运维**:额度查询、cron 漏跑怎么补、token 过期/更换、迁移怎么应用。
 
 ---
 
