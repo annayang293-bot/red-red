@@ -197,12 +197,42 @@ export default function SettingsTab() {
 
         <details className="mt-5 text-[13px] text-mut">
           <summary className="cursor-pointer text-ink/80">怎么创建一个「受限」token(更安全,推荐)?</summary>
-          <ol className="mt-2 list-decimal space-y-1 pl-5">
-            <li>登录 Apify → 右上头像 → <b>Settings → API &amp; Integrations</b>。</li>
-            <li>点 <b>Create a new token</b>,打开 <b>Limit token permissions</b>。</li>
-            <li>只授予「运行指定 Actor」的权限,选我们用的 Reddit 爬虫。</li>
-            <li>复制 token 粘到上面。这样即使泄露,别人也只能跑这个爬虫,读不了你账号的其它东西。</li>
+          <p className="mt-2">
+            受限 token 万一泄露,别人也只能跑我们这个 Reddit 爬虫,碰不到你账号里的其它东西。
+          </p>
+          <ol className="mt-2 list-decimal space-y-1.5 pl-5">
+            <li>
+              打开{" "}
+              <a
+                href="https://console.apify.com/settings/api-integrations"
+                target="_blank"
+                rel="noreferrer"
+                className="text-terra underline"
+              >
+                console.apify.com/settings/api-integrations
+              </a>
+              (用你的 Apify 账号登录)。
+            </li>
+            <li>点 <b>Create a new token</b>,随便起个名(比如 <code>xhs-reddit</code>)。</li>
+            <li>打开 <b>Limit token permissions</b> 开关。</li>
+            <li>
+              在 Actor 权限里搜索并选 <code>harshmaur/reddit-scraper</code> —— 就是我们抓 Reddit 用的那个
+              (可点{" "}
+              <a
+                href="https://apify.com/harshmaur/reddit-scraper"
+                target="_blank"
+                rel="noreferrer"
+                className="text-terra underline"
+              >
+                apify.com/harshmaur/reddit-scraper
+              </a>{" "}
+              确认),勾上 <b>Run</b> 权限。
+            </li>
+            <li>创建后复制 token,粘到上面的输入框。</li>
           </ol>
+          <p className="mt-2">
+            嫌麻烦?直接用你的<b>默认 token</b> 也行 —— 功能完全一样,只是没限制范围。
+          </p>
         </details>
       </div>
     </div>
