@@ -2,3 +2,5 @@
 # Kept minimal so cold-install in GitHub Actions stays fast.
 requests>=2.31,<3
 supabase>=2.18,<3
+anthropic>=0.69,<1   # System ② writing job (pipeline/draft) — Claude orchestration
+cryptography>=43,<47  # BYOK (Phase 2): decrypt a workspace's Apify token on the runner

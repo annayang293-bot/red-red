@@ -21,6 +21,11 @@ on:
         description: 'Source label written to runs.triggered_by; one of "manual" or "cron".'
         required: true
         type: string
+      workspace_id:
+        description: "BYOK: if set, the run uses this workspace's own decrypted Apify token (else the project token)."
+        required: false
+        type: string
+        default: ''
     # Caller passes secrets via `secrets: inherit`; we still declare them so the workflow_call
     # surface is explicit and self-documenting.
     secrets:
@@ -36,7 +41,12 @@ on:
         # required since 2026-05-31 — RedditSource defaults to auth_mode: apify, which calls
         # the harshmaur/reddit-scraper actor over the Apify REST API. Missing token surfaces
         # downstream as a Python RuntimeError → `failed_sources` → run_once exits 1.
+        # Still the fallback when no workspace_id is passed (daily cron).
         required: true
+      TOKEN_ENC_KEY:
+        # BYOK: master key to decrypt a workspace's Apify token. Only read when workspace_id is
+        # set; the daily cron (no workspace_id) never needs it.
+        required: false
 
 # Defense-in-depth lockdowns (Rex Phase 1, 2026-05-31):
 #  - permissions: lock GITHUB_TOKEN to read-only (we only checkout; no push / no PR / no release).
@@ -61,6 +71,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
       APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      TOKEN_ENC_KEY: ${{ secrets.TOKEN_ENC_KEY }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -88,9 +99,10 @@ jobs:
         env:
           TOPIC: ${{ inputs.topic }}
           TRIGGERED_BY: ${{ inputs.triggered_by }}
+          WORKSPACE_ID: ${{ inputs.workspace_id }}
         run: |
           set -o pipefail
-          python -m pipeline.run_once "$TOPIC" --triggered-by "$TRIGGERED_BY" \
+          python -m pipeline.run_once "$TOPIC" --triggered-by "$TRIGGERED_BY" --workspace-id "$WORKSPACE_ID" \
             | tee /tmp/run_once_out.json
 
       - name: Summarize result

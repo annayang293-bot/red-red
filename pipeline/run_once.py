@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import sys
 
 from .ai_review import select_review_fn
@@ -69,6 +70,12 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Run the pipeline once and persist to Supabase")
     ap.add_argument("topic", help="Topic keyword, e.g. 'AI startup'")
     ap.add_argument("--triggered-by", default="manual", choices=["manual", "cron"])
+    ap.add_argument(
+        "--workspace-id",
+        default=None,
+        help="BYOK: if set, use this workspace's own (decrypted) Apify token; if omitted, use the "
+        "project APIFY_TOKEN (legacy / daily cron path).",
+    )
     args = ap.parse_args(argv)
 
     cfg = DEFAULT_CONFIG
@@ -79,6 +86,21 @@ def main(argv=None) -> int:
         # pipeline / adapter internals print to stdout → redirect to stderr so that real stdout
         # contains only the final JSON line (so Node can parse it cleanly).
         with contextlib.redirect_stdout(sys.stderr):
+            # BYOK (Phase 2): pick this run's Apify token — the workspace's own decrypted token if
+            # --workspace-id was given, else the project token already in env. Must run before the
+            # pipeline (reddit_source) reads APIFY_TOKEN. Token stays in process memory; never logged.
+            from .byok import resolve_apify_token
+
+            _apify = resolve_apify_token(args.workspace_id)
+            os.environ["APIFY_TOKEN"] = _apify
+            # Log the SOURCE + last 6 only (last6 is non-secret — shown in the UI too). Never log
+            # the full token. Lets the Actions log confirm which token path actually ran.
+            print(
+                "[byok] apify token source="
+                + (("workspace " + args.workspace_id) if args.workspace_id else "project-env")
+                + f" (…{_apify[-6:]})",
+                file=sys.stderr,
+            )
             # Share a single supabase client (cache read/write + later save all use it)
             sb_client = get_client()
             # Read the user-supplied mapping_hint (option 3) from the active topic, if any. Hint

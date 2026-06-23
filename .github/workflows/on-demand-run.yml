@@ -16,6 +16,11 @@ on:
         required: true
         type: string
         default: 'AI 创业'
+      workspace_id:
+        description: "BYOK: workspace UUID to run on its own Apify token. Blank = project token."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -26,4 +31,5 @@ jobs:
     with:
       topic: ${{ inputs.topic }}
       triggered_by: manual
+      workspace_id: ${{ inputs.workspace_id }}
     secrets: inherit
