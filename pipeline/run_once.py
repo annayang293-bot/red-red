@@ -108,15 +108,15 @@ def main(argv=None) -> int:
             # hint. Empty/missing hint = no extra steering.
             hint = None
             try:
-                trow = (
-                    sb_client.table("topics")
-                    .select("mapping_hint")
-                    .eq("keyword", args.topic)
-                    .eq("status", "active")
-                    .limit(1)
-                    .execute()
-                    .data
-                )
+                # Scope the hint lookup to this run's workspace when given (so we don't pick another
+                # workspace's same-keyword topic); else fall back to the single global active topic
+                # (legacy / daily-cron path). order desc = prefer the newest row if duplicates exist.
+                hint_q = sb_client.table("topics").select("mapping_hint").eq("keyword", args.topic)
+                if args.workspace_id:
+                    hint_q = hint_q.eq("workspace_id", args.workspace_id)
+                else:
+                    hint_q = hint_q.eq("status", "active")
+                trow = hint_q.order("topic_id", desc=True).limit(1).execute().data
                 if trow and trow[0].get("mapping_hint"):
                     hint = trow[0]["mapping_hint"]
             except Exception as e:  # noqa: BLE001
