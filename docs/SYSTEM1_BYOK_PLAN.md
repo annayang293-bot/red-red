@@ -124,7 +124,8 @@ report_top20 / posts_archive     -- 经 run_id 归属到某 workspace
 - "加主题"(填文字 → `resolve_topic` 预览只读子版块)/ "现在跑" / 按 workspace 看报告。
 - 6h 锁按 `(workspace, topic)`。
 - 邀请成员(完整协作者);成员看到同一份主题/报告/收藏。
-- **验收**:Anna 加主题→跑→看报告;邀请 Junxi;Junxi 看到同样的主题/报告/star;6h 内重跑被锁。
+- 🔒 **AuthZ 硬门(Phase 2 遗留,必做)**:`/api/run`(或新的 per-workspace 触发端点)在把 `workspace_id` 传进 dispatch **之前,必须先验证登录用户是该 workspace 的成员**。runner 端(`pipeline/byok.py`)只负责按 workspace_id 解密、**不验权** —— 谁能传 workspace_id 谁就能用那个 token,所以权限闸必须在这一层。
+- **验收**:Anna 加主题→跑→看报告;邀请 Junxi;Junxi 看到同样的主题/报告/star;6h 内重跑被锁;**非成员传别人的 workspace_id 被拒**。
 
 > ✅ 到 Phase 3,核心价值已交付:**登录 → 填自己 token → 搜自己主题 → 看自己(工作区)历史 → 拉队友共享。**
 

@@ -38,11 +38,11 @@ on:
       REDDIT_USER_AGENT:
         required: true
       APIFY_TOKEN:
-        # required since 2026-05-31 — RedditSource defaults to auth_mode: apify, which calls
-        # the harshmaur/reddit-scraper actor over the Apify REST API. Missing token surfaces
-        # downstream as a Python RuntimeError → `failed_sources` → run_once exits 1.
-        # Still the fallback when no workspace_id is passed (daily cron).
-        required: true
+        # The PROJECT token — used as the fallback when no workspace_id is passed (daily cron).
+        # required:false so a BYOK-only run (workspace_id set, no central token) isn't rejected at
+        # dispatch. If it's truly needed but missing, resolve_apify_token() raises loudly at runtime
+        # (→ run_once exits 1, visible red ✗). RedditSource calls harshmaur/reddit-scraper.
+        required: false
       TOKEN_ENC_KEY:
         # BYOK: master key to decrypt a workspace's Apify token. Only read when workspace_id is
         # set; the daily cron (no workspace_id) never needs it.

@@ -41,6 +41,10 @@ def resolve_apify_token(workspace_id: str | None) -> str:
     - workspace_id None  → fall back to the project token in env APIFY_TOKEN (legacy / daily-cron
       path, unchanged).
     Never logs the token.
+
+    SECURITY: this runner TRUSTS whatever workspace_id it is handed — it does NOT verify who
+    triggered the run. The membership/ownership gate MUST live upstream (Phase 3: /api/run verifies
+    the authenticated caller belongs to workspace_id before forwarding it into the dispatch).
     """
     if not workspace_id:
         tok = os.environ.get("APIFY_TOKEN")
@@ -58,6 +62,11 @@ def resolve_apify_token(workspace_id: str | None) -> str:
         .limit(1)
         .execute()
     )
+    # Distinguish a real DB/query failure from "no row" so debugging isn't misleading.
+    if getattr(res, "error", None):
+        raise RuntimeError(
+            f"[byok] Supabase error fetching token for workspace {workspace_id}: {res.error}"
+        )
     rows = res.data or []
     if not rows:
         raise RuntimeError(f"workspace {workspace_id} has no Apify token configured.")
