@@ -127,15 +127,30 @@ class SupabaseStore:
         res = q.execute()
         return getattr(res, "data", res)
 
-    def ensure_topic(self, keyword: str) -> int:
-        """Resolve the topic_id this run belongs to — aligned with the "at most 1 active topic" model.
+    def ensure_topic(self, keyword: str, workspace_id: Optional[str] = None) -> int:
+        """Resolve the topic_id this run belongs to.
 
-        Rules (don't implicitly switch topics / don't reuse archived ones in save):
-          1) An active topic matching the keyword exists → use it (normal case).
-          2) A different keyword has an active topic already → fail loud (switching topics must
-             go through the topic-management layer explicitly).
-          3) No active topic at all → create an active one for this keyword (won't collide with uq_topics_one_active).
+        BYOK / model B (workspace_id given): find THIS workspace's topic for the keyword, else create
+        one (status='active', scoped to the workspace). Multiple live topics per workspace are allowed
+        (uq_topics_one_active dropped in 0015) so there is no global single-active guard here; the
+        match is scoped by workspace so two workspaces' same-keyword topics never collide.
+
+        Legacy / daily cron (workspace_id=None, single-tenant): conservative resolver —
+          1) active topic matching the keyword → use it.
+          2) a different keyword already has an active topic → fail loud (don't implicitly switch).
+          3) no active topic at all → create one for this keyword.
         """
+        if workspace_id is not None:
+            wmatch = self._exec(
+                self.c.table("topics").select("topic_id")
+                .eq("keyword", keyword).eq("workspace_id", workspace_id)
+                .order("topic_id", desc=True).limit(1))
+            if wmatch:
+                return wmatch[0]["topic_id"]
+            wcreated = self._exec(self.c.table("topics").insert(
+                {"keyword": keyword, "status": "active", "workspace_id": workspace_id}))
+            return wcreated[0]["topic_id"]
+
         match = self._exec(
             self.c.table("topics").select("topic_id")
             .eq("keyword", keyword).eq("status", "active").limit(1))
@@ -153,7 +168,7 @@ class SupabaseStore:
             {"keyword": keyword, "status": "active"}))
         return created[0]["topic_id"]
 
-    def save(self, res, topic_id: Optional[int] = None) -> int:
+    def save(self, res, topic_id: Optional[int] = None, workspace_id: Optional[str] = None) -> int:
         """Persist one RunResult: topic → run → posts → report_top20 (with real post_ids). Returns run_id.
 
         posts_archive is an **append-only historical snapshot** (Rex 🔴1): the same post (source,
@@ -169,9 +184,10 @@ class SupabaseStore:
         """
         rows = runresult_to_rows(res)
         if topic_id is None:
-            topic_id = self.ensure_topic(res.topic)
+            topic_id = self.ensure_topic(res.topic, workspace_id)
 
-        run_row = dict(rows["run"], topic_id=topic_id)
+        # Attribute the run to its workspace (BYOK). None = legacy/cron → NULL workspace_id (unchanged).
+        run_row = dict(rows["run"], topic_id=topic_id, workspace_id=workspace_id)
         run_id = self._exec(self.c.table("runs").insert(run_row))[0]["run_id"]
 
         # posts_archive: look up existing rows (by source_native_id), only insert posts never seen before;

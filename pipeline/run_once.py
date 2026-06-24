@@ -149,7 +149,7 @@ def main(argv=None) -> int:
             )
             # Attach the full LLM-chosen subreddit list to res so store writes it into runs.subreddits
             res.subreddits = list(mapping["subreddits"])
-            run_id = SupabaseStore(get_client()).save(res)
+            run_id = SupabaseStore(get_client()).save(res, workspace_id=args.workspace_id)
         # Wrap the result line — same JSON shape as before. `ok` stays a function of "did we
         # write a row to Supabase", not "did the report have content"; the exit-code policy below
         # is what gates the GH Actions ✅/✗ signal.
