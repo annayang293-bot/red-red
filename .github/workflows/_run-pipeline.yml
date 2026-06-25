@@ -50,15 +50,17 @@ on:
 
 # Defense-in-depth lockdowns (Rex Phase 1, 2026-05-31):
 #  - permissions: lock GITHUB_TOKEN to read-only (we only checkout; no push / no PR / no release).
-#  - concurrency.group: serialize runs of the same topic across cron + manual dispatch so a slow
-#    cron + a follow-up manual click don't both write a duplicate run to Supabase. cancel-in-progress
-#    is false so the second dispatch queues behind the first instead of canceling it (we'd rather
-#    burn 25s of runner time than swallow a user-initiated click).
+#  - concurrency.group: serialize runs of the same (workspace, topic) across cron + manual dispatch
+#    so a slow cron + a follow-up manual click don't both write a duplicate run to Supabase. Scoped
+#    by workspace_id (Phase 3-7) so two workspaces tracking the SAME keyword run in parallel (separate
+#    tokens, separate report scopes) instead of queueing behind each other. cancel-in-progress is
+#    false so the second dispatch queues behind the first instead of canceling it (we'd rather burn
+#    25s of runner time than swallow a user-initiated click).
 permissions:
   contents: read
 
 concurrency:
-  group: pipeline-${{ inputs.topic }}
+  group: pipeline-${{ inputs.workspace_id }}-${{ inputs.topic }}
   cancel-in-progress: false
 
 jobs:

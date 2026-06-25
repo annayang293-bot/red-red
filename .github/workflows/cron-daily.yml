@@ -1,18 +1,32 @@
-# Daily pipeline run — triggered by VERCEL CRON, not GitHub's own scheduler.
+# Daily auto_daily pipeline run — triggered by VERCEL CRON, not GitHub's own scheduler.
 #
 # 2026-06-15: removed the GitHub `schedule:` trigger. GitHub Actions cron is best-effort and
 # routinely delayed / dropped under load — on 2026-06-15 the 16:00 UTC run simply never fired.
 # The reliable trigger is now Vercel Cron (`web/vercel.json` crons → `web/pages/api/cron/daily.ts`),
-# which fires daily at 16:00 UTC and dispatches THIS workflow via the REST API. We must NOT keep
-# both triggers — that would run the pipeline twice a day (double Apify cost).
+# which fires daily at 16:00 UTC.
 #
-# Topic is hard-coded here (dispatch carries no inputs). If the active topic changes, update this
-# file (or move to a config-driven trigger, e.g. reading topics.active from DB).
-name: Cron — daily pipeline
+# Phase 3-7 (2026-06-25): this is no longer a single hardcoded-topic job. The daily run became a
+# per-topic **auto_daily** opt-in feature: `/api/cron/daily.ts` enumerates every topic with
+# auto_daily=true and dispatches THIS workflow once per (topic, workspace), so each runs on its own
+# workspace's Apify token and writes that workspace's reports. Topic + workspace_id therefore arrive
+# as inputs (previously hardcoded «AI 创业» with no workspace). triggered_by stays "cron".
+name: Cron — daily pipeline (auto_daily)
 
 on:
-  # Dispatched by Vercel Cron (see above) and usable manually from the GH Actions UI for ops.
+  # Dispatched per (topic, workspace) by Vercel Cron via the REST API (see above); also usable
+  # manually from the GH Actions UI for ops (defaults below let it run without typing).
   workflow_dispatch:
+    inputs:
+      topic:
+        description: Topic keyword to run.
+        required: true
+        type: string
+        default: 'AI 创业'
+      workspace_id:
+        description: "BYOK: workspace UUID to run on its own Apify token. Blank = project token."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -21,6 +35,7 @@ jobs:
   run:
     uses: ./.github/workflows/_run-pipeline.yml
     with:
-      topic: 'AI 创业'
+      topic: ${{ inputs.topic }}
       triggered_by: cron
+      workspace_id: ${{ inputs.workspace_id }}
     secrets: inherit
