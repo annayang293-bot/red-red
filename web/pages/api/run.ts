@@ -14,6 +14,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { ensureMethod, failError } from "@/lib/api";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
+import { resolveCaller } from "@/lib/auth";
 
 const GITHUB_API = "https://api.github.com";
 // Hardcoded for this project (Anna 2026-05-31): single repo, single workflow file. Keeps the
@@ -31,15 +32,24 @@ const MIN_RUN_INTERVAL_HOURS = 6;
 
 // Topic allowlist — defense-in-depth alongside the workflow's env-indirection fix
 // (Rex Phase 1, 2026-05-31). The workflow no longer interpolates `${{ inputs.topic }}` into
-// a shell `run:` block, so injection is already neutralized at the YAML layer. But /api/run is
-// public + unauthenticated, so we also reject obviously hostile / non-topic-looking inputs at
-// the API layer: only Unicode letters/digits, whitespace, and `_ -` survive. That covers
-// "AI 创业", "AI startup", "indie-hackers" etc. while rejecting `;`, backticks, quotes, `$`, `|`,
-// shell expansion characters, etc.
+// a shell `run:` block, so injection is already neutralized at the YAML layer. We still reject
+// obviously hostile / non-topic-looking inputs at the API layer: only Unicode letters/digits,
+// whitespace, and `_ -` survive. That covers "AI 创业", "AI startup", "indie-hackers" etc. while
+// rejecting `;`, backticks, quotes, `$`, `|`, shell expansion characters, etc.
 const TOPIC_ALLOWLIST = /^[\p{L}\p{N}\p{Zs}_\-]{1,80}$/u;
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ensureMethod(req, res, ["POST"])) return;
+
+  // AuthZ gate (Phase 3-4, the BYOK "hard gate"): this endpoint dispatches a PAID Apify run on a
+  // workspace's token, so it must NOT be publicly triggerable. Verify the caller and resolve THEIR
+  // workspace; we stamp that workspace_id onto the dispatch so the runner uses the right token and
+  // the run is attributed to the right workspace (no more NULL-workspace manual runs). The runner
+  // trusts whatever workspace_id it's handed — so the trust boundary is HERE: we only ever pass the
+  // caller's own workspace, never a client-supplied one.
+  const caller = await resolveCaller(req);
+  if (!caller) return res.status(401).json({ error: "unauthorized" });
+
   const topic = String(req.body?.topic ?? "").trim();
   if (!topic) return res.status(400).json({ error: "missing_topic" });
   if (!TOPIC_ALLOWLIST.test(topic)) {
@@ -50,8 +60,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
   }
 
-  // Re-run guard: skip if this topic ran within MIN_RUN_INTERVAL_HOURS. Fail-open — a guard-query
-  // error never blocks a run. `force: true` overrides (e.g. a "run anyway?" confirm in the UI).
+  // Re-run guard: skip if this topic ran within MIN_RUN_INTERVAL_HOURS. Keyed per
+  // (workspace, topic) (Phase 3) — one workspace's runs never throttle another's, even on the same
+  // keyword. Fail-open — a guard-query error never blocks a run. `force: true` overrides (e.g. a
+  // "run anyway?" confirm in the UI).
   const force = req.body?.force === true;
   if (!force) {
     try {
@@ -59,6 +71,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const { data } = await sb
         .from("runs")
         .select("started_at")
+        .eq("workspace_id", caller.workspaceId)
         .eq("topic_keyword", topic)
         .order("started_at", { ascending: false })
         .limit(1);
@@ -101,7 +114,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           "Content-Type": "application/json",
           "User-Agent": "red-red-vercel-dispatch",
         },
-        body: JSON.stringify({ ref: WORKFLOW_REF, inputs: { topic } }),
+        body: JSON.stringify({
+          ref: WORKFLOW_REF,
+          inputs: { topic, workspace_id: caller.workspaceId },
+        }),
       }
     );
 

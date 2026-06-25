@@ -129,9 +129,8 @@ export default function Home() {
       }
 
       try {
-        const dispatch = await fetch("/api/run", {
+        const dispatch = await authedFetch("/api/run", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ topic }),
         }).then((res) => res.json());
         if (!dispatch.ok) {
