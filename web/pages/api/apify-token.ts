@@ -13,6 +13,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { encryptToken } from "@/lib/crypto";
+import { resolveCaller } from "@/lib/auth";
 
 const APIFY_API = "https://api.apify.com/v2";
 const APIFY_TIMEOUT_MS = 8000;
@@ -37,37 +38,6 @@ async function validateApifyToken(
   } catch {
     return { ok: false, transient: true }; // network error or timeout
   }
-}
-
-/** Verify the caller's JWT and resolve the workspace they own. null = unauthorized / no workspace. */
-async function resolveCaller(
-  req: NextApiRequest,
-): Promise<{ userId: string; workspaceId: string } | null> {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith("Bearer ")) return null;
-  const accessToken = auth.slice("Bearer ".length);
-  const sb = getSupabaseAdmin();
-  const {
-    data: { user },
-    error,
-  } = await sb.auth.getUser(accessToken);
-  if (error || !user) return null;
-  // Phase 1: the token belongs to the workspace OWNER, and each user owns exactly one workspace
-  // (auto-created at signup; enforced by UNIQUE(owner_id) in 0013). (Phase 3, once members can be
-  // invited into other workspaces + there's a workspace switcher, GET should also let a member read
-  // the shared workspace's token status — revisit then.)
-  const { data, error: wsErr } = await sb
-    .from("workspaces")
-    .select("id")
-    .eq("owner_id", user.id)
-    .limit(1);
-  if (wsErr) {
-    console.error("[apify-token] workspace lookup error:", wsErr.message);
-    return null; // fail closed (caller sees 401)
-  }
-  const workspaceId = data?.[0]?.id as string | undefined;
-  if (!workspaceId) return null;
-  return { userId: user.id, workspaceId };
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

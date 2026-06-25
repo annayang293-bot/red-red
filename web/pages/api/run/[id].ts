@@ -3,21 +3,34 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { ensureMethod, failError } from "@/lib/api";
+import { resolveCaller } from "@/lib/auth";
 import { ReportRow, reportRowsToItems, buildReport } from "@/lib/report-mapping";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ensureMethod(req, res, ["GET"])) return;
   try {
+    // Phase 3: every report read is scoped to the caller's workspace. The numeric-id path filters
+    // runs by workspace_id so a logged-in user can't read another workspace's run by guessing its id
+    // (a cross-workspace IDOR); an out-of-workspace id just resolves to "no report".
+    const caller = await resolveCaller(req);
+    if (!caller) return res.status(401).json({ error: "unauthorized" });
     const sb = getSupabaseAdmin();
     const idParam = String(req.query.id ?? "");
 
     // Resolve the target run (now also fetch topic_id so we can compute "recurring vs new")
-    let runQuery = sb.from("runs").select("run_id, topic_id, topic_keyword, started_at, subreddits");
+    let runQuery = sb
+      .from("runs")
+      .select("run_id, topic_id, topic_keyword, started_at, subreddits")
+      .eq("workspace_id", caller.workspaceId);
     if (idParam === "latest") {
-      // "Most recent" = most recent run of the **current active topic** (otherwise switching to a
-      // brand-new untouched topic would bleed an older report from another topic).
+      // "Most recent" = most recent run of THIS workspace's **current active topic** (otherwise
+      // switching to a brand-new untouched topic would bleed an older report from another topic).
       const { data: actives, error: aErr } = await sb
-        .from("topics").select("topic_id").eq("status", "active").limit(1);
+        .from("topics")
+        .select("topic_id")
+        .eq("workspace_id", caller.workspaceId)
+        .eq("status", "active")
+        .limit(1);
       if (aErr) throw aErr;
       const activeId = (actives ?? [])[0]?.topic_id;
       if (!activeId) return res.status(200).json({ report: null });
@@ -49,6 +62,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const earlierRunsQ = await sb
       .from("runs")
       .select("run_id")
+      .eq("workspace_id", caller.workspaceId)
       .eq("topic_id", runRow.topic_id)
       .lt("started_at", runRow.started_at);
     if (earlierRunsQ.error) throw earlierRunsQ.error;

@@ -1,0 +1,21 @@
+/** Browser fetch that attaches the Supabase access token as a Bearer header (System ① BYOK).
+ *
+ * Phase 3 made the per-workspace read/write API routes auth-gated (they resolve the caller via
+ * resolveCaller → workspace). Any UI fetch to those routes must go through this helper so the
+ * server can identify the workspace. The whole app is already behind <AuthGate>, so a session
+ * normally exists; if it somehow doesn't, the request goes out without a token and the route 401s
+ * (fail closed) rather than silently reading another workspace's data.
+ *
+ * Also sets Content-Type: application/json whenever a body is present (every JSON POST/DELETE here).
+ */
+import { getSupabaseBrowser } from "@/lib/supabase-browser";
+
+export async function authedFetch(input: string, init?: RequestInit): Promise<Response> {
+  const {
+    data: { session },
+  } = await getSupabaseBrowser().auth.getSession();
+  const headers = new Headers(init?.headers);
+  if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
+  if (init?.body) headers.set("Content-Type", "application/json");
+  return fetch(input, { ...init, headers });
+}

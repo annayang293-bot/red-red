@@ -3,7 +3,7 @@
  *  ciphertext (only last6 + username). Error responses are codes, mapped to text here. */
 import { useEffect, useState, FormEvent } from "react";
 import { useT } from "@/lib/i18n";
-import { getSupabaseBrowser } from "@/lib/supabase-browser";
+import { authedFetch } from "@/lib/authed-fetch";
 
 interface TokenStatus {
   configured: boolean;
@@ -23,16 +23,6 @@ const ERR: Record<string, string> = {
   unauthorized: "登录已过期,请重新登录。",
 };
 const errText = (code?: string) => (code && ERR[code]) || "出错了,请重试。";
-
-async function authedFetch(input: string, init?: RequestInit) {
-  const {
-    data: { session },
-  } = await getSupabaseBrowser().auth.getSession();
-  const headers = new Headers(init?.headers);
-  if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
-  if (init?.body) headers.set("Content-Type", "application/json");
-  return fetch(input, { ...init, headers });
-}
 
 export default function SettingsTab() {
   const { t } = useT();

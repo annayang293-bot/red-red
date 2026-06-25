@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Report, RunSummary } from "@/lib/types";
 import ReportList from "./ReportList";
 import { useT } from "@/lib/i18n";
+import { authedFetch } from "@/lib/authed-fetch";
 
 export default function HistoryTab({
   runs,
@@ -25,7 +26,7 @@ export default function HistoryTab({
     setErr("");
     setLoading(true);
     try {
-      const res = await fetch(`/api/run/${runId}`);
+      const res = await authedFetch(`/api/run/${runId}`);
       if (!res.ok) throw new Error(t("history.loadFailedTpl", { status: res.status }));
       const r = await res.json();
       setOpenReport(r.report ?? null);

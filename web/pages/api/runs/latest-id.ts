@@ -15,15 +15,21 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { ensureMethod, failError } from "@/lib/api";
+import { resolveCaller } from "@/lib/auth";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!ensureMethod(req, res, ["GET"])) return;
   try {
+    // Phase 3: scope to the caller's workspace — "latest run of the active topic" must mean THIS
+    // workspace's active topic, never bleed another workspace's runs into the polling signal.
+    const caller = await resolveCaller(req);
+    if (!caller) return res.status(401).json({ error: "unauthorized" });
     const sb = getSupabaseAdmin();
 
     const { data: actives, error: aErr } = await sb
       .from("topics")
       .select("topic_id")
+      .eq("workspace_id", caller.workspaceId)
       .eq("status", "active")
       .limit(1);
     if (aErr) throw aErr;
@@ -33,6 +39,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { data: runs, error: rErr } = await sb
       .from("runs")
       .select("run_id, started_at")
+      .eq("workspace_id", caller.workspaceId)
       .eq("topic_id", activeId)
       .order("started_at", { ascending: false })
       .limit(1);

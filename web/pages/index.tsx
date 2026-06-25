@@ -8,6 +8,7 @@ import SettingsTab from "@/components/SettingsTab";
 import { TopicLite } from "@/components/TopicPanel";
 import { Report, ReportItem, RunSummary, TabKey } from "@/lib/types";
 import { useT } from "@/lib/i18n";
+import { authedFetch } from "@/lib/authed-fetch";
 
 export default function Home() {
   const { t } = useT();
@@ -35,7 +36,7 @@ export default function Home() {
   // need the just-fetched payload don't have to wait a render cycle to read the React state.
   const loadReport = useCallback(async (runId?: number | string): Promise<Report | null> => {
     const url = runId ? `/api/run/${runId}` : "/api/run/latest";
-    const res = await fetch(url);
+    const res = await authedFetch(url);
     if (!res.ok) throw new Error(`Report load failed (${res.status})`);
     const r = await res.json();
     const loaded: Report | null = r.report ?? null;
@@ -52,7 +53,7 @@ export default function Home() {
   }, []);
 
   const loadRuns = useCallback(async () => {
-    const res = await fetch("/api/runs?limit=100");
+    const res = await authedFetch("/api/runs?limit=100");
     if (!res.ok) throw new Error(`Run history load failed (${res.status})`);
     const r = await res.json();
     setRuns(Array.isArray(r.runs) ? r.runs : []);
@@ -117,7 +118,7 @@ export default function Home() {
       // before the dispatched workflow has even started.
       let baselineRunId: number | null;
       try {
-        const baseRes = await fetch("/api/runs/latest-id");
+        const baseRes = await authedFetch("/api/runs/latest-id");
         if (!baseRes.ok) throw new Error(`baseline HTTP ${baseRes.status}`);
         const base = await baseRes.json();
         baselineRunId = typeof base?.run_id === "number" ? base.run_id : null;
@@ -156,7 +157,7 @@ export default function Home() {
           }
           await new Promise((r) => setTimeout(r, POLL_MS));
           try {
-            const cur = await fetch("/api/runs/latest-id").then((r) => r.json());
+            const cur = await authedFetch("/api/runs/latest-id").then((r) => r.json());
             const newRunId: number | null =
               typeof cur?.run_id === "number" ? cur.run_id : null;
             if (newRunId != null && (baselineRunId == null || newRunId > baselineRunId)) {
