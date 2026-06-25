@@ -140,7 +140,7 @@ class SupabaseStore:
           2) a different keyword already has an active topic → fail loud (don't implicitly switch).
           3) no active topic at all → create one for this keyword.
         """
-        if workspace_id is not None:
+        if workspace_id:  # truthy → real workspace id; None/"" → legacy path (defensive)
             wmatch = self._exec(
                 self.c.table("topics").select("topic_id")
                 .eq("keyword", keyword).eq("workspace_id", workspace_id)

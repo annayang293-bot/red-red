@@ -77,6 +77,10 @@ def main(argv=None) -> int:
         "project APIFY_TOKEN (legacy / daily cron path).",
     )
     args = ap.parse_args(argv)
+    # The cron passes --workspace-id "" (the workflow input's default). Treat empty exactly like
+    # "not supplied" so the legacy path (project token, NULL workspace) runs — NOT the BYOK branch
+    # (which would try to use "" as a UUID and crash). Use this normalized value everywhere below.
+    workspace_id = args.workspace_id or None
 
     cfg = DEFAULT_CONFIG
     # Load .env first (Reddit UA / OpenAI key etc. are read by adapters during run_pipeline;
@@ -91,13 +95,13 @@ def main(argv=None) -> int:
             # pipeline (reddit_source) reads APIFY_TOKEN. Token stays in process memory; never logged.
             from .byok import resolve_apify_token
 
-            _apify = resolve_apify_token(args.workspace_id)
+            _apify = resolve_apify_token(workspace_id)
             os.environ["APIFY_TOKEN"] = _apify
             # Log the SOURCE + last 6 only (last6 is non-secret — shown in the UI too). Never log
             # the full token. Lets the Actions log confirm which token path actually ran.
             print(
                 "[byok] apify token source="
-                + (("workspace " + args.workspace_id) if args.workspace_id else "project-env")
+                + (("workspace " + workspace_id) if workspace_id else "project-env")
                 + f" (…{_apify[-6:]})",
                 file=sys.stderr,
             )
@@ -112,8 +116,8 @@ def main(argv=None) -> int:
                 # workspace's same-keyword topic); else fall back to the single global active topic
                 # (legacy / daily-cron path). order desc = prefer the newest row if duplicates exist.
                 hint_q = sb_client.table("topics").select("mapping_hint").eq("keyword", args.topic)
-                if args.workspace_id:
-                    hint_q = hint_q.eq("workspace_id", args.workspace_id)
+                if workspace_id:
+                    hint_q = hint_q.eq("workspace_id", workspace_id)
                 else:
                     hint_q = hint_q.eq("status", "active")
                 trow = hint_q.order("topic_id", desc=True).limit(1).execute().data
@@ -149,7 +153,7 @@ def main(argv=None) -> int:
             )
             # Attach the full LLM-chosen subreddit list to res so store writes it into runs.subreddits
             res.subreddits = list(mapping["subreddits"])
-            run_id = SupabaseStore(get_client()).save(res, workspace_id=args.workspace_id)
+            run_id = SupabaseStore(get_client()).save(res, workspace_id=workspace_id)
         # Wrap the result line — same JSON shape as before. `ok` stays a function of "did we
         # write a row to Supabase", not "did the report have content"; the exit-code policy below
         # is what gates the GH Actions ✅/✗ signal.
