@@ -46,7 +46,7 @@ export default function Home() {
   }, []);
 
   const loadStarred = useCallback(async () => {
-    const res = await fetch("/api/starred");
+    const res = await authedFetch("/api/starred");
     if (!res.ok) throw new Error(`Starred library load failed (${res.status})`);
     const r = await res.json();
     setStarredItems(Array.isArray(r.items) ? r.items : []);
@@ -85,9 +85,8 @@ export default function Home() {
   const toggle = useCallback(
     async (id: string) => {
       const isStarred = starredIds.has(id);
-      await fetch("/api/star", {
+      await authedFetch("/api/star", {
         method: isStarred ? "DELETE" : "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ post_id: Number(id) }),
       });
       await loadStarred();
