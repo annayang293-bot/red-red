@@ -10,7 +10,7 @@
  */
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
-export async function authedFetch(input: string, init?: RequestInit): Promise<Response> {
+async function sendWithToken(input: string, init?: RequestInit): Promise<Response> {
   const {
     data: { session },
   } = await getSupabaseBrowser().auth.getSession();
@@ -18,4 +18,18 @@ export async function authedFetch(input: string, init?: RequestInit): Promise<Re
   if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
   if (init?.body) headers.set("Content-Type", "application/json");
   return fetch(input, { ...init, headers });
+}
+
+export async function authedFetch(input: string, init?: RequestInit): Promise<Response> {
+  let res = await sendWithToken(input, init);
+  // Refresh-and-retry once on 401. On page load, when the stored access token is expired, the
+  // background refresh can race concurrent calls — getSession() may hand back the stale (expired)
+  // token, which the server rejects. Forcing a refresh then retrying eliminates that race (and also
+  // recovers from a token that simply expired). A 401 means the server rejected the request before
+  // doing any work, so retrying is safe for POST/DELETE too (no double-execution).
+  if (res.status === 401) {
+    await getSupabaseBrowser().auth.refreshSession();
+    res = await sendWithToken(input, init);
+  }
+  return res;
 }
