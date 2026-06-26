@@ -138,6 +138,8 @@ export const strings: Strings = {
     "topic.hintLabel": "额外提示词:",
     "topic.hintPlaceholder": "例:重点 indie SaaS,不要游戏开发",
     "topic.hintHelp": "AI 选版块时会先看这条;留空就用默认逻辑",
+    "topic.autoDaily": "每天自动跑",
+    "topic.autoDailyHelp": "打开后每天自动抓一次(用这个工作区自己的 Apify 额度)",
   },
   en: {
     // App-level
@@ -260,6 +262,8 @@ export const strings: Strings = {
     "topic.hintLabel": "Extra hint:",
     "topic.hintPlaceholder": "e.g. focus on indie SaaS, NOT game dev",
     "topic.hintHelp": "AI reads this first when picking subreddits; leave empty for default logic",
+    "topic.autoDaily": "Auto-run daily",
+    "topic.autoDailyHelp": "When on, fetches once a day automatically (on this workspace's own Apify quota)",
   },
 };
 

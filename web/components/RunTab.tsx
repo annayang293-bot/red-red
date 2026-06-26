@@ -14,6 +14,7 @@ export default function RunTab({
   onRun,
   onSwitchTopic,
   onDeleteTopic,
+  onToggleAutoDaily,
   onBackToActiveLatest,
   running,
   switching,
@@ -28,6 +29,7 @@ export default function RunTab({
   onRun: (topic: string) => void;
   onSwitchTopic: (keyword: string, hint?: string) => void;
   onDeleteTopic: (topicId: number, keyword: string) => void;
+  onToggleAutoDaily: (topicId: number, next: boolean) => void;
   onBackToActiveLatest: () => void;
   running: boolean;
   switching: boolean;
@@ -126,6 +128,7 @@ export default function RunTab({
         scrapedSubreddits={isViewingHistory ? [] : scrapedSubreddits}
         onSwitch={onSwitchTopic}
         onDelete={onDeleteTopic}
+        onToggleAutoDaily={onToggleAutoDaily}
         switching={switching}
       />
     </div>

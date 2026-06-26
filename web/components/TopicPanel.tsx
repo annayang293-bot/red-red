@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { useT } from "@/lib/i18n";
 
-export type TopicLite = { topic_id: number; keyword: string; status: string };
+export type TopicLite = {
+  topic_id: number;
+  keyword: string;
+  status: string;
+  auto_daily?: boolean;
+};
 
 export default function TopicPanel({
   topics,
@@ -10,6 +15,7 @@ export default function TopicPanel({
   scrapedSubreddits,
   onSwitch,
   onDelete,
+  onToggleAutoDaily,
   switching,
 }: {
   topics: TopicLite[];
@@ -20,13 +26,16 @@ export default function TopicPanel({
   // wired to topics.mapping_hint on the backend. Existing callers passing only keyword still work.
   onSwitch: (keyword: string, hint?: string) => void;
   onDelete: (topicId: number, keyword: string) => void;
+  // Toggle a topic's daily auto-run opt-in (Phase 3-7 auto_daily feature).
+  onToggleAutoDaily: (topicId: number, next: boolean) => void;
   switching: boolean;
 }) {
   const { t } = useT();
+  const activeTopicObj = topics.find((tt) => tt.keyword === activeTopic);
   const [newTopic, setNewTopic] = useState("");
   const [newHint, setNewHint] = useState("");
   const [showHint, setShowHint] = useState(false);
-  const others = topics.filter((t) => t.keyword !== activeTopic);
+  const others = topics.filter((tp) => tp.keyword !== activeTopic);
 
   return (
     <aside className="w-full shrink-0 md:w-56">
@@ -39,6 +48,21 @@ export default function TopicPanel({
             {t("topic.activeBadge")}
           </span>
         </div>
+
+        {activeTopicObj && (
+          <div className="mt-2">
+            <label className="flex cursor-pointer items-center gap-2 text-[12px] text-ink/80">
+              <input
+                type="checkbox"
+                checked={!!activeTopicObj.auto_daily}
+                onChange={(e) => onToggleAutoDaily(activeTopicObj.topic_id, e.target.checked)}
+                className="accent-terra"
+              />
+              {t("topic.autoDaily")}
+            </label>
+            <div className="mt-0.5 text-[10px] text-mut">{t("topic.autoDailyHelp")}</div>
+          </div>
+        )}
 
         {scrapedSubreddits.length > 0 && (
           <div className="mt-2.5">
@@ -74,6 +98,14 @@ export default function TopicPanel({
                   >
                     {tt.keyword}
                   </button>
+                  <input
+                    type="checkbox"
+                    checked={!!tt.auto_daily}
+                    onChange={(e) => onToggleAutoDaily(tt.topic_id, e.target.checked)}
+                    title={t("topic.autoDaily")}
+                    aria-label={t("topic.autoDaily")}
+                    className="shrink-0 accent-terra"
+                  />
                   <button
                     onClick={() => onDelete(tt.topic_id, tt.keyword)}
                     disabled={switching}

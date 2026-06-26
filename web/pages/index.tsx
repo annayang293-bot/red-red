@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
 import Sidebar from "@/components/Sidebar";
 import RunTab from "@/components/RunTab";
@@ -60,7 +60,7 @@ export default function Home() {
   }, []);
 
   const loadTopics = useCallback(async () => {
-    const res = await fetch("/api/topics");
+    const res = await authedFetch("/api/topics");
     if (!res.ok) throw new Error(`Topics load failed (${res.status})`);
     const r = await res.json();
     const list: TopicLite[] = Array.isArray(r.topics) ? r.topics : [];
@@ -201,9 +201,8 @@ export default function Home() {
       setSwitching(true);
       setRunMsg("");
       try {
-        const r = await fetch("/api/topics", {
+        const r = await authedFetch("/api/topics", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ keyword, hint }),
         }).then((res) => res.json());
         if (r.ok || r.topic) {
@@ -224,9 +223,8 @@ export default function Home() {
   const deleteTopic = useCallback(
     async (topicId: number, keyword: string) => {
       try {
-        const res = await fetch("/api/topics", {
+        const res = await authedFetch("/api/topics", {
           method: "DELETE",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ topic_id: topicId }),
         });
         const r = await res.json();
@@ -248,6 +246,37 @@ export default function Home() {
       }
     },
     [loadTopics, loadRuns, loadReport, report, t]
+  );
+
+  // Toggle a topic's daily auto-run opt-in (Phase 3-7 auto_daily). Optimistic: flip the local row
+  // immediately, reconcile from the server, and roll back on failure. A per-topic in-flight guard
+  // ignores rapid re-clicks so an earlier PATCH's rollback can't stomp a later one's state.
+  const autoDailyInFlight = useRef<Set<number>>(new Set());
+  const toggleAutoDaily = useCallback(
+    async (topicId: number, next: boolean) => {
+      if (autoDailyInFlight.current.has(topicId)) return;
+      autoDailyInFlight.current.add(topicId);
+      setTopics((prev) =>
+        prev.map((tp) => (tp.topic_id === topicId ? { ...tp, auto_daily: next } : tp)),
+      );
+      try {
+        const res = await authedFetch("/api/topics", {
+          method: "PATCH",
+          body: JSON.stringify({ topic_id: topicId, auto_daily: next }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await loadTopics(); // reconcile with server truth
+      } catch (e) {
+        // roll back the optimistic flip
+        setTopics((prev) =>
+          prev.map((tp) => (tp.topic_id === topicId ? { ...tp, auto_daily: !next } : tp)),
+        );
+        setRunMsg(`${t("run.msg.switchFailedPrefix")}${(e as Error).message}`);
+      } finally {
+        autoDailyInFlight.current.delete(topicId);
+      }
+    },
+    [loadTopics, t],
   );
 
   // "Back to current topic's latest": used in history-viewing mode to reset to the active topic's latest report.
@@ -288,6 +317,7 @@ export default function Home() {
                   onRun={runPipeline}
                   onSwitchTopic={switchTopic}
                   onDeleteTopic={deleteTopic}
+                  onToggleAutoDaily={toggleAutoDaily}
                   onBackToActiveLatest={backToActiveLatest}
                   running={running}
                   switching={switching}
