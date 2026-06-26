@@ -4,6 +4,7 @@
 import { useEffect, useState, FormEvent } from "react";
 import { useT } from "@/lib/i18n";
 import { authedFetch } from "@/lib/authed-fetch";
+import WorkspacePanel from "@/components/WorkspacePanel";
 
 interface TokenStatus {
   configured: boolean;
@@ -109,6 +110,8 @@ export default function SettingsTab() {
     <div>
       <h1 className="text-xl font-bold">{t("set.heading")}</h1>
       <p className="mb-4 mt-0.5 text-[13px] text-mut">{t("set.subtitle")}</p>
+
+      <WorkspacePanel />
 
       <div className="max-w-xl rounded-xl border border-line bg-panel p-5">
         <div className="text-sm font-semibold text-ink">Apify Token</div>

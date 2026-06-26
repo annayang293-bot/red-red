@@ -10,12 +10,20 @@
  */
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
+/** localStorage key for the workspace switcher's current selection (Phase 3 sharing). */
+export const CURRENT_WS_KEY = "current_workspace_id";
+
 async function sendWithToken(input: string, init?: RequestInit): Promise<Response> {
   const {
     data: { session },
   } = await getSupabaseBrowser().auth.getSession();
   const headers = new Headers(init?.headers);
   if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
+  // Active workspace (from the switcher). Absent → the server defaults to the user's own workspace.
+  if (typeof window !== "undefined") {
+    const wsId = window.localStorage.getItem(CURRENT_WS_KEY);
+    if (wsId) headers.set("x-workspace-id", wsId);
+  }
   if (init?.body) headers.set("Content-Type", "application/json");
   return fetch(input, { ...init, headers });
 }

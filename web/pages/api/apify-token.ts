@@ -49,6 +49,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const caller = await resolveCaller(req);
     if (!caller) return res.status(401).json({ error: "unauthorized" });
+    // The token belongs to the workspace OWNER. Members (Phase 3 sharing) ride on it — they can run
+    // the pipeline (/api/run) on it, but must NOT change or delete it. GET (view status) is fine.
+    if ((req.method === "POST" || req.method === "DELETE") && caller.role !== "owner") {
+      return res.status(403).json({ error: "owner_only" });
+    }
     const sb = getSupabaseAdmin();
 
     if (req.method === "GET") {
