@@ -38,7 +38,7 @@ export default function TopicPanel({
   const others = topics.filter((tp) => tp.keyword !== activeTopic);
 
   return (
-    <aside className="w-full shrink-0 md:w-56">
+    <aside className="w-full shrink-0 md:w-72">
       <div className="rounded-xl border border-line bg-panel p-4">
         <h2 className="text-sm font-bold">{t("topic.heading")}</h2>
 

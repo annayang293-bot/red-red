@@ -295,7 +295,7 @@ export default function Home() {
       </Head>
       <div className="flex min-h-screen flex-col md:flex-row">
         <Sidebar active={tab} onChange={setTab} starCount={starredItems.length} />
-        <main className="max-w-5xl flex-1 px-6 py-7 md:px-8">
+        <main className="max-w-6xl flex-1 px-6 py-7 md:px-8">
           {loading ? (
             <div className="py-16 text-center text-sm text-mut">{t("app.loading")}</div>
           ) : (
